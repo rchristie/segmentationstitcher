@@ -36,7 +36,7 @@ class StitchVagusTestCase(unittest.TestCase):
         segment12.set_translation(new_translation)
         annotations1 = stitcher1.get_annotations()
         self.assertEqual(7, len(annotations1))
-        self.assertEqual(1, stitcher1.get_version())
+        self.assertEqual("1.0.0", stitcher1.get_version())
         annotation11 = annotations1[0]
         self.assertEqual("Epineurium", annotation11.get_name())
         self.assertEqual("http://purl.obolibrary.org/obo/UBERON_0000124", annotation11.get_term())
@@ -81,7 +81,7 @@ class StitchVagusTestCase(unittest.TestCase):
         settings = stitcher1.encode_settings()
         self.assertEqual(3, len(settings["segments"]))
         self.assertEqual(7, len(settings["annotations"]))
-        self.assertEqual(1, settings["version"])
+        self.assertEqual("1.0.0", settings["version"])
         assertAlmostEqualList(self, new_translation, settings["segments"][1]["translation"], delta=TOL)
         self.assertEqual(AnnotationCategory.INDEPENDENT_NETWORK.name, settings["annotations"][6]["category"])
 
@@ -148,6 +148,7 @@ class StitchVagusTestCase(unittest.TestCase):
 
         output_region = stitcher.get_root_region().createRegion()
         stitcher.stitch(output_region)
+        self.assertEqual("1.0.0", stitcher.get_version())
 
         fieldmodule = output_region.getFieldmodule()
         coordinates = fieldmodule.findFieldByName("coordinates").castFiniteElement()

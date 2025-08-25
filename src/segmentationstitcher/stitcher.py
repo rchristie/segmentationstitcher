@@ -42,7 +42,7 @@ class Stitcher:
         self._segments = []
         self._connections = []
         self._max_distance = 0.0
-        self._version = 1  # increment when new settings added to migrate older serialised settings
+        self._version = "1.0.0"  # increment when new settings added to migrate older serialised settings
         with HierarchicalChangeManager(self._root_region):
             max_range_reciprocal_sum = 0.0
             for segmentation_file_name in segmentation_file_names:
@@ -87,16 +87,24 @@ class Stitcher:
             for annotation in self._annotations:
                 annotation.set_category_change_callback(self._annotation_category_change)
 
+    SEGMENTATION_STITCHER_SETTINGS_ID = "segmentation stitcher settings"
+
     def decode_settings(self, settings_in: dict):
         """
         Update stitcher settings from dictionary of serialised settings.
         :param settings_in: Dictionary of settings as produced by encode_settings().
         """
-        assert settings_in.get("annotations") and settings_in.get("segments") and settings_in.get("version"), \
-            "Stitcher.decode_settings: Invalid settings dictionary"
-        # settings_version = settings_in["version"]
+        settings_version = settings_in.get("version")
+        assert (settings_in.get("annotations") and settings_in.get("segments") and
+                (settings_in.get("id", self.SEGMENTATION_STITCHER_SETTINGS_ID) ==
+                 self.SEGMENTATION_STITCHER_SETTINGS_ID) and
+                settings_version), "Stitcher.decode_settings: Invalid settings dictionary"
         settings = self.encode_settings()
         settings.update(settings_in)
+        # migrate from integer version number to string "major#.minor#.patch#"
+        if isinstance(settings_version, int):
+            settings_version = settings["version"] = "1.0.0"
+        assert settings_version == "1.0.0"  # future: migrate if version changes
 
         # update annotations and warn about differences
         processed_count = 0
@@ -170,6 +178,7 @@ class Stitcher:
         :return: Dictionary of Stitcher settings ready to serialise to JSON.
         """
         settings = {
+            "id": self.SEGMENTATION_STITCHER_SETTINGS_ID,
             "annotations": [annotation.encode_settings() for annotation in self._annotations],
             "connections": [connection.encode_settings() for connection in self._connections],
             "segments": [segment.encode_settings() for segment in self._segments],
@@ -242,6 +251,9 @@ class Stitcher:
         return self._segments
 
     def get_version(self):
+        """
+        :return: Stitcher version number string "major#.minor#.patch#"
+        """
         return self._version
 
     def stitch(self, region):
