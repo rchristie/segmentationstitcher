@@ -1,19 +1,26 @@
 """
 A segment of the segmentation data, generally from a separate image block.
 """
-from builtins import enumerate
-
-from cmlibs.maths.vectorops import cross, dot, magnitude, matrix_mult, mult, normalize, set_magnitude, sub
+from cmlibs.maths.vectorops import (
+    add, cross, dot, euler_to_rotation_matrix, magnitude, matrix_mult, matrix_vector_mult, mult, normalize,
+    set_magnitude, sub)
 from cmlibs.utils.zinc.field import (
-    get_group_list, find_or_create_field_coordinates, find_or_create_field_finite_element, find_or_create_field_group)
-from cmlibs.utils.zinc.finiteelement import evaluate_field_nodeset_range
+    get_group_list, find_or_create_field_coordinates, find_or_create_field_finite_element, find_or_create_field_group,
+    find_or_create_field_stored_string)
+from cmlibs.utils.zinc.finiteelement import evaluate_field_nodeset_range, get_maximum_node_identifier
 from cmlibs.utils.zinc.group import group_add_group_local_contents, group_remove_group_local_contents
 from cmlibs.utils.zinc.general import ChangeManager
 from cmlibs.zinc.field import Field
 from cmlibs.zinc.node import Node
 from cmlibs.zinc.result import RESULT_OK
 from segmentationstitcher.annotation import AnnotationCategory
+import json
+import logging
 import math
+import os
+
+
+logger = logging.getLogger(__name__)
 
 
 class Segment:
@@ -93,6 +100,49 @@ class Segment:
             "translation": self._translation
         }
         return settings
+
+    def define_endpoints(self, endpoints_file_name):
+        """
+        Read endpoints labels and positions from the endpoints file as markers in the raw region.
+        These are used to associate externally recognised names with endpoints for later reporting.
+        :param endpoints_file_name: Name of file in Slicer 3D markups json format.
+        """
+        if os.path.isfile(endpoints_file_name):
+            with open(endpoints_file_name, "r") as f:
+                try:
+                    marker_file_data = json.loads(f.read())
+                    schema = marker_file_data.get("@schema")
+                    markups = marker_file_data.get("markups")
+                    if not (schema and ("slicer" in schema) and ("markups" in schema) and markups):
+                        logger.error("Stitcher endpoints file " + endpoints_file_name + " is not a supported file type")
+                        return
+                    if len(markups) == 0:
+                        logger.warning("Stitcher endpoints file" + endpoints_file_name + " has no markups")
+                    for markup in markups:
+                        coordinate_system = markup.get("coordinateSystem")
+                        if coordinate_system != "LPS":
+                            logger.warning("Stitcher endpoints file" + endpoints_file_name
+                                           + " unimplemented coordinateSystem name " + coordinate_system)
+                        coordinate_units = markup.get("coordinateUnits")
+                        control_points = markup.get("controlPoints")
+                        if not (isinstance(control_points, list) and (len(control_points) > 0)):
+                            logger.warning("Stitcher endpoints file" + endpoints_file_name + " has no controlPoints")
+                            continue
+                        # build list of marker labels and positions
+                        marker_labels = []
+                        marker_positions = []
+                        for control_point in control_points:
+                            marker_labels.append(control_point["label"])
+                            x = control_point["position"]
+                            marker_positions.append(x)
+                        generate_datapoints(self._raw_region, marker_positions,
+                                            field_names_and_values=[("marker_name", marker_labels)],
+                                            group_name="marker")
+                except json.JSONDecodeError as e:
+                    logger.error("Stitcher endpoints file " + endpoints_file_name
+                                 + " exception reading json format " + str(e))
+        else:
+            logger.error("Stitcher endpoints file " + endpoints_file_name + " not found")
 
     def _get_element_node_maps(self):
         """
@@ -389,12 +439,33 @@ class Segment:
     def get_name(self):
         return self._name
 
+    def get_coordinates_midpoint(self):
+        """
+        :return: Coordinates at the midpoint in their x, y, z range.
+        """
+        return [0.5 * (minimum + maximum) for minimum, maximum in zip(self._raw_minimums, self._raw_maximums)]
+
+    def get_coordinates_range(self):
+        """
+        Get x, y, z ranges of coordinates in raw data.
+        :return: Minimum coordinates, maximum coordinates.
+        """
+        return self._raw_minimums, self._raw_maximums
+
     def get_max_range(self):
         """
         :return: Maximum range of raw coordinates on any axis x, y, z.
         """
         raw_range = [self._raw_maximums[c] - self._raw_minimums[c] for c in range(3)]
         return max(raw_range)
+
+    def transform_coordinates(self, position):
+        """
+        :param position Coordinates x, y, z in the segment.
+        :return: Transformed position.
+        """
+        rotation_matrix = euler_to_rotation_matrix([math.radians(deg) for deg in self._rotation])
+        return add(matrix_vector_mult(rotation_matrix, position), self._translation)
 
     def get_raw_region(self):
         """
@@ -619,3 +690,55 @@ def fit_line(path_coordinates, path_radii, x1=None, x2=None, filter_proportion=0
     #       [a_inv[1][0] * a[0][0] + a_inv[1][1] * a[1][0],
     #        a_inv[1][0] * a[0][1] + a_inv[1][1] * a[1][1]])
     return start_x, end_x, mean_r, mean_projection_error
+
+
+def generate_datapoints(region, px, start_data_identifier=None, coordinate_field_name="coordinates",
+                        field_names_and_values=[], group_name=None):
+    """
+    Generate a set of datapoints in the region.
+    :param region: Zinc Region.
+    :param px: Coordinates of data points.
+    :param start_data_identifier: Optional first datapoint identifier to use.
+    :param coordinate_field_name: Optional name of coordinate field to define, if omitted use "coordinates".
+    :param field_names_and_values: Optional lists of (field_name, list of values) for additional fields to
+    define on the datapoints. Values may be scalar or vector (list of lists) real, or string.
+    Must be same number of values as number of points.
+    :param group_name: Optional name of group to put new datapoints in.
+    :return: next datapoint identifier
+    """
+    fieldmodule = region.getFieldmodule()
+    with ChangeManager(fieldmodule):
+        coordinates = find_or_create_field_coordinates(fieldmodule, name=coordinate_field_name)
+        group = find_or_create_field_group(fieldmodule, group_name) if group_name else None
+
+        datapoints = fieldmodule.findNodesetByFieldDomainType(Field.DOMAIN_TYPE_DATAPOINTS)
+        data_identifier = start_data_identifier if (start_data_identifier is not None) else \
+            max(get_maximum_node_identifier(datapoints), 0) + 1
+        data_group = group.getOrCreateNodesetGroup(datapoints) if group else datapoints
+
+        nodetemplate = datapoints.createNodetemplate()
+        nodetemplate.defineField(coordinates)
+        fields_values = []  # (field, is_string, values)
+        for field_name, field_values in field_names_and_values:
+            is_string = isinstance(field_values[0], str)
+            if is_string:
+                field = find_or_create_field_stored_string(fieldmodule, field_name, managed=True)
+            else:
+                components_count = len(field_values[0]) if isinstance(field_values[0], list) else 1
+                field = find_or_create_field_finite_element(fieldmodule, field_name, components_count, managed=True)
+            nodetemplate.defineField(field)
+            fields_values.append((field, is_string, field_values))
+
+        fieldcache = fieldmodule.createFieldcache()
+        for n, x in enumerate(px):
+            node = data_group.createNode(data_identifier, nodetemplate)
+            fieldcache.setNode(node)
+            coordinates.setNodeParameters(fieldcache, -1, Node.VALUE_LABEL_VALUE, 1, x)
+            for field, is_string, values in fields_values:
+                if is_string:
+                    field.assignString(fieldcache, values[n])
+                else:
+                    field.setNodeParameters(fieldcache, -1, Node.VALUE_LABEL_VALUE, 1, values[n])
+            data_identifier += 1
+
+    return data_identifier

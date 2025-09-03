@@ -15,8 +15,18 @@ from segmentationstitcher.segment import Segment
 from segmentationstitcher.annotation import AnnotationCategory, region_get_annotations
 
 import copy
+import logging
 import math
 from pathlib import Path
+import re
+
+
+logger = logging.getLogger(__name__)
+
+
+def natural_sort_key(s):
+    # Split the string by numeric parts, converting numbers to integers
+    return [int(c) if c.isdigit() else c.lower() for c in re.split('([0-9]+)', s)]
 
 
 class Stitcher:
@@ -24,30 +34,48 @@ class Stitcher:
     Interface for stitching segmentation data from and calculating transformations between adjacent image blocks.
     """
 
-    def __init__(self, segmentation_file_names: list, network_group1_keywords, network_group2_keywords):
+    def __init__(self, segmentation_file_names: list, network_group1_keywords, network_group2_keywords,
+                 endpoints_file_names=None):
         """
         :param segmentation_file_names: List of filenames containing raw segmentations in Zinc format.
         :param network_group1_keywords: List of keywords. Segmented networks annotated with any of these keywords are
         initially assigned to network group 1, allowing them to be stitched together.
         :param network_group2_keywords: List of keywords. Segmented networks annotated with any of these keywords are
         initially assigned to network group 2, allowing them to be stitched together.
+        :param endpoints_file_names: Optional list of files defining additional markers for applying external labels for
+        ends of networks. Slicer3D markup json files currently supported. Files must start with the same stem name
+        as the segmentation files to load into that segment.
         """
+        self._segmentation_file_names = sorted(segmentation_file_names, key=natural_sort_key)
+        self._network_group1_keywords = copy.deepcopy(network_group1_keywords)
+        self._network_group2_keywords = copy.deepcopy(network_group2_keywords)
+        self._endpoints_file_names = endpoints_file_names if endpoints_file_names else []
         self._context = Context("Segmentation Stitcher")
         self._root_region = self._context.getDefaultRegion()
         self._stitch_region = self._root_region.createRegion()
         self._annotations = []
-        self._network_group1_keywords = copy.deepcopy(network_group1_keywords)
-        self._network_group2_keywords = copy.deepcopy(network_group2_keywords)
         self._term_keywords = ['fma:', 'fma_', 'ilx:', 'ilx_', 'uberon:', 'uberon_']
         self._segments = []
         self._connections = []
         self._max_distance = 0.0
         self._version = "1.0.0"  # increment when new settings added to migrate older serialised settings
+        unused_endpoints_file_names = copy.copy(self._endpoints_file_names)
+        unused_endpoints_file_name_stems = [Path(file_path).stem for file_path in unused_endpoints_file_names]
         with HierarchicalChangeManager(self._root_region):
             max_range_reciprocal_sum = 0.0
-            for segmentation_file_name in segmentation_file_names:
-                name = Path(segmentation_file_name).name
+            for segmentation_file_name in self._segmentation_file_names:
+                file_path = Path(segmentation_file_name)
+                name = file_path.name
                 segment = Segment(name, segmentation_file_name, self._root_region)
+                name_stem = file_path.stem
+                used_endpoints_file_indexes = []
+                for ix, endpoints_file_name_stem in enumerate(unused_endpoints_file_name_stems):
+                    if name_stem in endpoints_file_name_stem:
+                        segment.define_endpoints(unused_endpoints_file_names[ix])
+                        used_endpoints_file_indexes.append(ix)
+                for ix in reversed(used_endpoints_file_indexes):
+                    del unused_endpoints_file_name_stems[ix]
+                    del unused_endpoints_file_names[ix]
                 max_range_reciprocal_sum += 1.0 / segment.get_max_range()
                 self._segments.append(segment)
                 segment_annotations = region_get_annotations(
@@ -86,6 +114,8 @@ class Stitcher:
                         segment.update_annotation_category_groups(self._annotations)
             for annotation in self._annotations:
                 annotation.set_category_change_callback(self._annotation_category_change)
+        for endpoints_file_name in unused_endpoints_file_names:
+            logger.warning('Stitcher: No segment matched to endpoint file: ' + endpoints_file_name)
 
     SEGMENTATION_STITCHER_SETTINGS_ID = "segmentation stitcher settings"
 

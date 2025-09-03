@@ -5,6 +5,7 @@ from cmlibs.maths.vectorops import (
     add, cross, dot, div, euler_to_rotation_matrix, magnitude, matrix_inv, matrix_vector_mult, mult, normalize, sub)
 from cmlibs.utils.zinc.field import (
     find_or_create_field_coordinates, find_or_create_field_finite_element, find_or_create_field_group)
+from cmlibs.utils.zinc.finiteelement import evaluate_field_nodeset_range
 from cmlibs.utils.zinc.general import ChangeManager
 from cmlibs.utils.zinc.group import group_add_group_local_contents
 from cmlibs.zinc.element import Element, Elementbasis
@@ -148,6 +149,24 @@ class Connection:
         :return: Map annotation name -> list of paired nodes from segment1 and segment2
         """
         return self._linked_nodes
+
+    def get_coordinates_midpoint(self):
+        """
+        Get midpoint of linked nodes, if any, which are transformed by the respective segments.
+        :return: Coordinates at the midpoint in their x, y, z range, or None if no linked nodes.
+        """
+        minimums, maximums = self.get_coordinates_range()
+        if minimums and maximums:
+            return [0.5 * (minimum + maximum) for minimum, maximum in zip(minimums, maximums)]
+        return None
+
+    def get_coordinates_range(self):
+        """
+        Get x, y, z ranges of linked nodes in connection, which are transformed by the respective segments.
+        :return: Minimum coordinates, maximum coordinates, or None, None if no linked nodes.
+        """
+        nodes = self._region.getFieldmodule().findNodesetByFieldDomainType(Field.DOMAIN_TYPE_NODES)
+        return evaluate_field_nodeset_range(self._coordinates, nodes)
 
     def optimise_transformation(self):
         """
