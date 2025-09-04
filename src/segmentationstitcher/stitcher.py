@@ -63,6 +63,7 @@ class Stitcher:
         unused_endpoints_file_name_stems = [Path(file_path).stem for file_path in unused_endpoints_file_names]
         with HierarchicalChangeManager(self._root_region):
             max_range_reciprocal_sum = 0.0
+            zero_range_segments_count = 0
             for segmentation_file_name in self._segmentation_file_names:
                 file_path = Path(segmentation_file_name)
                 name = file_path.name
@@ -76,7 +77,11 @@ class Stitcher:
                 for ix in reversed(used_endpoints_file_indexes):
                     del unused_endpoints_file_name_stems[ix]
                     del unused_endpoints_file_names[ix]
-                max_range_reciprocal_sum += 1.0 / segment.get_max_range()
+                segment_max_range = segment.get_max_range()
+                if segment_max_range > 0.0:
+                    max_range_reciprocal_sum += 1.0 / segment_max_range
+                else:
+                    zero_range_segments_count += 1
                 self._segments.append(segment)
                 segment_annotations = region_get_annotations(
                     segment.get_raw_region(), self._network_group1_keywords, self._network_group2_keywords,
@@ -106,9 +111,13 @@ class Stitcher:
                         (annotation.get_name() != "marker")):
                     # print("Exclude general annotation", annotation.get_name(), "with no term")
                     annotation.set_category(AnnotationCategory.EXCLUDE)
+            self._mean_segment_length = 1.0
             if self._segments:
+                if max_range_reciprocal_sum > 0.0:
+                    self._mean_segment_length = (
+                            (len(self._segments) - zero_range_segments_count) / max_range_reciprocal_sum)
                 with HierarchicalChangeManager(self._root_region):
-                    self._max_distance = 0.25 * len(self._segments) / max_range_reciprocal_sum
+                    self._max_distance = 0.25 * self._mean_segment_length
                     for segment in self._segments:
                         segment.create_end_point_directions(self._annotations, self._max_distance)
                         segment.update_annotation_category_groups(self._annotations)
@@ -279,6 +288,13 @@ class Stitcher:
 
     def get_segments(self):
         return self._segments
+
+    def get_mean_segment_length(self):
+        """
+        Get representative mean segment length for sizing graphics and tolerances.
+        :return: Real length > 0.0.
+        """
+        return self._mean_segment_length
 
     def get_version(self):
         """
