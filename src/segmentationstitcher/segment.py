@@ -73,6 +73,12 @@ class Segment:
             self._working_best_fit_line_orientation = find_or_create_field_finite_element(
                 self._working_fieldmodule, "best_fit_line_orientation", 9)
             self._working_end_group = find_or_create_field_group(self._working_fieldmodule, "active_ends")
+            for category in AnnotationCategory:
+                if category.is_connectable():
+                    group_name = category.get_group_name()
+                    group = self._working_fieldmodule.createFieldGroup()
+                    group.setName(group_name)
+                    group.setManaged(True)
         self._element_node_ids, self._node_element_ids = self._get_element_node_maps()
         self._end_node_ids = self._get_end_node_ids()
         self._end_point_data = {}  # dict node_id -> (coordinates, direction, radius, annotation)
@@ -531,12 +537,27 @@ class Segment:
         """
         return self._working_region
 
+    def get_working_fieldmodule(self):
+        """
+        :return: Zinc Fieldmodule for working region.
+        """
+        return self._working_fieldmodule
+
     def get_working_end_group(self):
         """
         Get group from working region containing connectable end points in segment.
         :return: Zinc group containing connectable end points.
         """
         return self._working_end_group
+
+    def get_working_category_group(self, category):
+        """
+        Get group from working region containing connectable end points in segment and in the supplied category.
+        :param category: AnnotationCategory.
+        :return: Zinc group containing connectable end points in that category.
+        """
+        category_group = self._working_fieldmodule.findFieldByName(category.get_group_name()).castGroup()
+        return category_group if category_group.isValid() else None
 
     def update_annotation_category(self, annotation, old_category=AnnotationCategory.EXCLUDE):
         """
@@ -581,27 +602,32 @@ class Segment:
         """
         Ensure working end group contains all connectable end points.
         """
-        connectable_node_groups = []
-        for category in AnnotationCategory:
-            if category.is_connectable():
-                category_group = self.get_category_group(category)
-                node_group = category_group.getNodesetGroup(self._raw_nodes)
-                if node_group.isValid() and (node_group.getSize() > 0):
-                    connectable_node_groups.append(node_group)
+        # list of (raw_category_node_group, working_category_node_group) capable of connections
         with ChangeManager(self._working_fieldmodule):
-            self._working_end_group.clear()
             working_datapoints = \
                 self._working_fieldmodule.findNodesetByFieldDomainType(Field.DOMAIN_TYPE_DATAPOINTS)
+            connectable_node_groups = []
+            for category in AnnotationCategory:
+                if category.is_connectable():
+                    category_group = self.get_category_group(category)
+                    category_node_group = category_group.getNodesetGroup(self._raw_nodes)
+                    working_category_group = self.get_working_category_group(category)
+                    if category_node_group.isValid() and working_category_group:
+                        working_category_group.clear()
+                        working_category_node_group = working_category_group.getOrCreateNodesetGroup(working_datapoints)
+                        connectable_node_groups.append((category_node_group, working_category_node_group))
+            self._working_end_group.clear()
             working_node_group = self._working_end_group.getOrCreateNodesetGroup(working_datapoints)
             working_nodeiterator = working_datapoints.createNodeiterator()
             working_node = working_nodeiterator.next()
             while working_node.isValid():
                 node_identifier = working_node.getIdentifier()
                 raw_node = self._raw_nodes.findNodeByIdentifier(node_identifier)
-                for node_group in connectable_node_groups:
+                for node_group, working_category_node_group in connectable_node_groups:
                     if node_group.containsNode(raw_node):
                         working_node_group.addNode(working_node)
-                        break;
+                        working_category_node_group.addNode(working_node)
+                        break
                 working_node = working_nodeiterator.next()
 
 def fit_line(path_coordinates, path_radii, x1=None, x2=None, filter_proportion=0.0):

@@ -24,6 +24,12 @@ class AnnotationCategory(Enum):
         """
         return '.' + self.name
 
+    def get_lower_name(self):
+        """
+        :return: Lower case category name.
+        """
+        return self.name.lower()
+
     def is_connectable(self):
         return self in (self.INDEPENDENT_NETWORK, self.NETWORK_GROUP_1, self.NETWORK_GROUP_2)
 
