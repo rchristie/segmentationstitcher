@@ -130,20 +130,33 @@ class StitchVagusTestCase(unittest.TestCase):
         connection01 = stitcher.create_connection([segments[0], segments[1]])
         connection12 = stitcher.create_connection([segments[1], segments[2]])
 
-        connection01.optimise_transformation()
-        assertAlmostEqualList(self, [-2.894576, -5.574263, -63.93093], segments[1].get_rotation(), delta=TOL)
-        assertAlmostEqualList(self, [4.88866, -0.01213587, 0.01357185], segments[1].get_translation(), delta=TOL)
+        connection01.auto_align_segment(1)
+        rotation = segments[1].get_rotation()
+        translation = segments[1].get_translation()
+        assertAlmostEqualList(self, [-2.894576, -5.574263, -63.93093], rotation, delta=TOL)
+        assertAlmostEqualList(self, [4.88866, -0.01213587, 0.01357185], translation, delta=TOL)
         linked_nodes01 = connection01.get_linked_nodes()
         self.assertEqual(linked_nodes01, {
             "Fascicle": [[22, 28], [35, 12], [40, 23]],
             "left vagus X nerve trunk": [[11, 1]]})
 
-        connection12.optimise_transformation()
+        connection12.auto_align_segment(1)
         assertAlmostEqualList(self, [-4.919549, -2.280625, -13.52467], segments[2].get_rotation(), delta=TOL)
         assertAlmostEqualList(self, [9.543171, -0.3494296, 0.03930248], segments[2].get_translation(), delta=TOL)
         linked_nodes12 = connection12.get_linked_nodes()
         self.assertEqual(linked_nodes12, {
             "Fascicle": [[22, 15], [38, 25]],
+            "left vagus X nerve trunk": [[11, 1]]})
+
+        # now align first segment relative to second
+        connection01.auto_align_segment(0)
+        rotation = segments[0].get_rotation()
+        translation = segments[0].get_translation()
+        assertAlmostEqualList(self, [0.5904670871359933, 0.327008456961372, 0.08272009867790592], rotation, delta=TOL)
+        assertAlmostEqualList(self, [0.0010985770233687066, -0.05096474638998973, 0.02847203766782994], translation, delta=TOL)
+        linked_nodes01 = connection01.get_linked_nodes()
+        self.assertEqual(linked_nodes01, {
+            "Fascicle": [[22, 28], [35, 12], [40, 23]],
             "left vagus X nerve trunk": [[11, 1]]})
 
         output_region = stitcher.get_root_region().createRegion()
@@ -156,8 +169,8 @@ class StitchVagusTestCase(unittest.TestCase):
         datapoints = fieldmodule.findNodesetByFieldDomainType(Field.DOMAIN_TYPE_DATAPOINTS)
         mesh = fieldmodule.findMeshByDimension(1)
         minimums, maximums = evaluate_field_nodeset_range(coordinates, nodes)
-        assertAlmostEqualList(self, [0.04674543239403558, -1.5276719288528786, -0.5804178855490847], minimums, delta=TOL)
-        assertAlmostEqualList(self, [13.538987060134247, 1.11238124203403, 0.6470665850902932], maximums, delta=TOL)
+        assertAlmostEqualList(self, [0.04749509590306315, -1.5276719288528786, -0.5661785379561856], minimums, delta=TOL)
+        assertAlmostEqualList(self, [13.538987060134247, 1.102601773020926, 0.6470665850902932], maximums, delta=TOL)
 
         fascicle = fieldmodule.findFieldByName("Fascicle").castGroup()
         self.assertTrue(fascicle.isValid())

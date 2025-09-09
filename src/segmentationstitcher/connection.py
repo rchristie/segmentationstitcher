@@ -13,6 +13,10 @@ from cmlibs.zinc.field import Field
 from scipy.optimize import minimize
 from segmentationstitcher.annotation import AnnotationCategory
 import math
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 class Connection:
@@ -168,11 +172,20 @@ class Connection:
         nodes = self._region.getFieldmodule().findNodesetByFieldDomainType(Field.DOMAIN_TYPE_NODES)
         return evaluate_field_nodeset_range(self._coordinates, nodes)
 
-    def optimise_transformation(self):
+    def auto_align_segment(self, dependent_segment_index):
         """
-        Optimise transformation of second segment to align with position and direction of nearest points between
-        both segments.
+        Optimise transformation of one connected segment relative to the other, by getting best fit
+        alignment and connection between nearest end points between them.
+        :param dependent_segment_index: Index of segment to optimise transformation of.
         """
+        segments_count = len(self._segments)
+        if (dependent_segment_index < 0) or (dependent_segment_index >= segments_count):
+            logger.error("auto_align_segment.  Segment index " + str(dependent_segment_index) + " out of range")
+            return
+        if segments_count != 2:
+            logger.error("auto_align_segment.  Not implemented for " + str(segments_count) + " segments")
+            return
+        fixed_segment_index = 1 if (dependent_segment_index == 0) else 0
         segment_end_point_data = []
         initial_rotation = []
         initial_rotation_matrix = []
@@ -197,7 +210,6 @@ class Connection:
         mean_coordinates = []
         mean_directions = []
         for s, segment in enumerate(self._segments):
-            total_weight = 0.0
             distances = []
             max_distance = None
             for node_id0, transformed_coordinates0, _, _, _, annotation0 in segment_end_point_data[s]:
@@ -220,9 +232,7 @@ class Connection:
             nearby_proportion = 0.1  # proportion of max distance under which distance weighting is the same
             nearby_distance = max_distance * nearby_proportion
             sum_coordinates = [0.0, 0.0, 0.0]
-            sum_transformed_coordinates = [0.0, 0.0, 0.0]
             sum_direction = [0.0, 0.0, 0.0]
-            sum_transformed_direction = [0.0, 0.0, 0.0]
             total_weight = 0.0
             for p, data in enumerate(segment_end_point_data[s]):
                 distance = distances[p]
@@ -250,7 +260,7 @@ class Connection:
             mean_transformed_coordinates.append(x)
             unit_mean_transformed_directions.append(normalize(d))
 
-        # optimise transformation of second segment so mean coordinates and directions coincide
+        # optimise transformation of dependent segment so mean coordinates and directions coincide
 
         def rotation_objective(trial_rotation, *args):
             target_direction, source_direction, target_side_direction, source_side_direction = args
@@ -259,22 +269,24 @@ class Connection:
             trans_side_direction = matrix_vector_mult(trial_rotation_matrix, source_side_direction)
             return dot(trans_direction, target_direction) + dot(target_side_direction, trans_side_direction)
 
-        # note the result is dependent on the initial position, but final optimisation should reduced effect
+        # note the result is dependent on the initial position, but final optimisation should reduce effect
         # get a side direction to minimise the unconstrained twist from the current direction
+        dependent_segment = self._segments[dependent_segment_index]
+        dependent_segment_end_point_data = segment_end_point_data[dependent_segment_index]
         axis = [1.0, 0.0, 0.0]
-        if dot(unit_mean_transformed_directions[0], axis) < 0.1:
+        if dot(unit_mean_transformed_directions[fixed_segment_index], axis) < 0.1:
             axis = [0.0, 1.0, 0.0]
-        target_side = normalize(cross(unit_mean_transformed_directions[0], axis))
+        target_side = normalize(cross(unit_mean_transformed_directions[fixed_segment_index], axis))
         source_side = normalize(
-            cross(cross(target_side, unit_mean_transformed_directions[1]), unit_mean_transformed_directions[1]))
-        if initial_rotation_matrix[1]:
+            cross(cross(target_side, unit_mean_transformed_directions[dependent_segment_index]), unit_mean_transformed_directions[dependent_segment_index]))
+        if initial_rotation_matrix[dependent_segment_index]:
             transformed_source_side = source_side
-            inverse_rotation_matrix = matrix_inv(initial_rotation_matrix[1])
+            inverse_rotation_matrix = matrix_inv(initial_rotation_matrix[dependent_segment_index])
             source_side = matrix_vector_mult(inverse_rotation_matrix, transformed_source_side)
-        initial_angles = [math.radians(angle_degrees) for angle_degrees in self._segments[1].get_rotation()]
+        initial_angles = [math.radians(angle_degrees) for angle_degrees in dependent_segment.get_rotation()]
         side_weight = 0.01  # so side has only a small effect on objective
         res = minimize(rotation_objective, initial_angles,
-                       args=(unit_mean_transformed_directions[0], unit_mean_directions[1],
+                       args=(unit_mean_transformed_directions[fixed_segment_index], unit_mean_directions[dependent_segment_index],
                              mult(target_side, side_weight), mult(source_side, side_weight)),
                        method='Nelder-Mead', tol=0.001)
         if not res.success:
@@ -282,28 +294,28 @@ class Connection:
             return
         rotation = [math.degrees(angle_radians) for angle_radians in res.x]
         rotation_matrix = euler_to_rotation_matrix(res.x)
-        rotated_mean_coordinates = matrix_vector_mult(rotation_matrix, mean_coordinates[1])
-        translation = sub(mean_transformed_coordinates[0], rotated_mean_coordinates)
+        rotated_mean_coordinates = matrix_vector_mult(rotation_matrix, mean_coordinates[dependent_segment_index])
+        translation = sub(mean_transformed_coordinates[fixed_segment_index], rotated_mean_coordinates)
         # update transformed_coordinates in second segment data
-        for p, data in enumerate(segment_end_point_data[1]):
+        for p, data in enumerate(dependent_segment_end_point_data):
             coordinates = data[2]
             transformed_coordinates = add(matrix_vector_mult(rotation_matrix, coordinates), translation)
-            segment_end_point_data[1][p] = (data[0], transformed_coordinates, data[2], data[3], data[4], data[5])
-        unit_transformed_direction = matrix_vector_mult(rotation_matrix, unit_mean_directions[1])
+            dependent_segment_end_point_data[p] = (data[0], transformed_coordinates, data[2], data[3], data[4], data[5])
+        unit_transformed_direction = matrix_vector_mult(rotation_matrix, unit_mean_directions[dependent_segment_index])
         # translate along unit_transformed_direction so no overlap between points
         total_overlap = 0.0
         for s, segment in enumerate(self._segments):
             max_overlap = 0.0
             for data in segment_end_point_data[s]:
-                overlap = dot(sub(data[1], mean_transformed_coordinates[0]), unit_transformed_direction)
-                if s == 0:
+                overlap = dot(sub(data[1], mean_transformed_coordinates[fixed_segment_index]), unit_transformed_direction)
+                if s == fixed_segment_index:
                     overlap = -overlap
                 if overlap > max_overlap:
                     max_overlap = overlap
             total_overlap += max_overlap
         translation = sub(translation, mult(unit_transformed_direction, total_overlap))
-        self._segments[1].set_rotation(rotation, notify=False)
-        self._segments[1].set_translation(translation, notify=False)
+        dependent_segment.set_rotation(rotation, notify=False)
+        dependent_segment.set_translation(translation, notify=False)
 
         # GRC temp
         # score = self.build_links(build_link_objects=False)
@@ -313,8 +325,8 @@ class Connection:
         def links_objective(rotation_translation, *args):
             rotation = list(rotation_translation[:3])
             translation = list(rotation_translation[3:])
-            self._segments[1].set_rotation(rotation, notify=False)
-            self._segments[1].set_translation(translation, notify=False)
+            dependent_segment.set_rotation(rotation, notify=False)
+            dependent_segment.set_translation(translation, notify=False)
             score = self.build_links(build_link_objects=False)
             # print("rotation", rotation, "translation", translation, "score", score)
             return score
@@ -329,9 +341,9 @@ class Connection:
             return
         rotation = list(res.x[:3])
         translation = list(res.x[3:])
-        self._segments[1].set_rotation(rotation, notify=False)
+        dependent_segment.set_rotation(rotation, notify=False)
         # this will invoke build_links:
-        self._segments[1].set_translation(translation)
+        dependent_segment.set_translation(translation)
 
     def build_links(self, build_link_objects=True):
         """
