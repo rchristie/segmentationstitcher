@@ -2,7 +2,8 @@
 A connection between segments in the segmentation data.
 """
 from cmlibs.maths.vectorops import (
-    add, cross, dot, div, euler_to_rotation_matrix, magnitude, matrix_inv, matrix_vector_mult, mult, normalize, sub)
+    add, axis_angle_to_rotation_matrix, cross, dot, div, euler_to_rotation_matrix, magnitude, matrix_inv, matrix_mult,
+    matrix_vector_mult, mult, normalize, rotation_matrix_to_euler, sub)
 from cmlibs.utils.zinc.field import (
     find_or_create_field_coordinates, find_or_create_field_finite_element, find_or_create_field_group)
 from cmlibs.utils.zinc.finiteelement import evaluate_field_nodeset_range
@@ -50,7 +51,7 @@ class Connection:
                 group = fieldmodule.createFieldGroup()
                 group.setName(group_name)
                 group.setManaged(True)
-        self._linked_nodes = {}  # dict: annotation name --> list of [segment0_node_identifier, segment1_node_identifier]]
+        self._annotation_links = {}  # dict: annotation name --> list of {'locked': bool, 'node identifiers': list}
         for segment in self._segments:
             segment.add_transformation_change_callback(self._segment_transformation_change)
 
@@ -67,14 +68,51 @@ class Connection:
         Update segment settings from JSON dict containing serialised settings.
         :param settings_in: Dictionary of settings as produced by encode_settings().
         """
-        settings_name = self._separator.join(settings_in["segments"])
+        settings_name = self._separator.join(settings_in['segments'])
         assert settings_name == self._name
         # update current settings to gain new ones and override old ones
         settings = self.encode_settings()
         settings.update(settings_in)
-        linked_nodes = settings.get("linked nodes")
-        if isinstance(linked_nodes, dict):
-            self._linked_nodes = linked_nodes
+        # migrate from previous 'linked nodes' which had a list of node identifiers
+        linked_nodes = settings.get('linked nodes')
+        if linked_nodes is not None:
+            # migrate to new annotation links
+            annotation_links = {}
+            annotation_names = list(linked_nodes.keys())
+            for annotation_name in annotation_names:
+                links = linked_nodes[annotation_name]
+                new_links = []
+                if isinstance(links[0], list):
+                    for node_identifiers in links:
+                        new_links.append({'locked': False, 'node identifiers': node_identifiers})
+                annotation_links[annotation_name] = new_links
+            del settings['linked nodes']
+            settings['annotation links'] = annotation_links
+        else:
+            annotation_links = settings['annotation links']
+        # check nodes exist for all links, otherwise remove stale links
+        segment_nodes = [segment.get_raw_region().getFieldmodule().findNodesetByFieldDomainType(Field.DOMAIN_TYPE_NODES)
+                         for segment in self._segments]
+        annotation_names = list(annotation_links.keys())
+        for annotation_name in annotation_names:
+            links = annotation_links[annotation_name]
+            invalid_indexes = []
+            for i, link in enumerate(links):
+                node_identifiers = link['node identifiers']
+                invalid_link = False
+                for s, node_identifier in enumerate(node_identifiers):
+                    if not segment_nodes[s].findNodeByIdentifier(node_identifier).isValid():
+                        logger.warning('Stitcher connection ' + self._name + ' annotation ' + annotation_name +
+                                       ' link missing node ' + str(node_identifier) + ' from segment ' + str(s + 1) +
+                                       '. Removing link.')
+                        invalid_link = True
+                if invalid_link:
+                    invalid_indexes.append(i)
+            for i in reversed(invalid_indexes):
+                links.pop(i)
+            if len(links) == 0:
+                del annotation_links[annotation_name]
+        self._annotation_links = annotation_links
 
     def encode_settings(self) -> dict:
         """
@@ -82,12 +120,12 @@ class Connection:
         :return: Settings in a dict ready for passing to json.dump.
         """
         settings = {
-            "segments": [segment.get_name() for segment in self._segments],
-            "linked nodes": self._linked_nodes
+            'segments': [segment.get_name() for segment in self._segments],
+            'annotation links': self._annotation_links
         }
         return settings
 
-    def printLog(self):
+    def printZincLog(self):
         logger = self._region.getContext().getLogger()
         for index in range(logger.getNumberOfMessages()):
             print(logger.getMessageTextAtIndex(index))
@@ -136,23 +174,29 @@ class Connection:
         self.build_links()
         self.update_annotation_category_groups(self._annotations)
 
-    def add_linked_nodes(self, annotation, node_id0, node_id1):
+    def add_linked_nodes(self, annotation, node_id0, node_id1, locked=False):
         """
         :param annotation: Annotation to use for link.
         :param node_id0: Node identifier to link from segment[0].
-        :param node_id1:  Node identifier to link from segment[1].
+        :param node_id1: Node identifier to link from segment[1].
+        :param locked: True if link is
         """
         annotation_name = annotation.get_name()
-        annotation_linked_nodes = self._linked_nodes.get(annotation_name)
-        if not annotation_linked_nodes:
-            self._linked_nodes[annotation_name] = annotation_linked_nodes = []
-        annotation_linked_nodes.append([node_id0, node_id1])
+        links = self._annotation_links.get(annotation_name)
+        if not links:
+            # first inserts at the end
+            self._annotation_links[annotation_name] = links = []
+            # then reinsert any other names which should be after name
+            for name in list(self._annotation_links.keys()):
+                if name > annotation_name:
+                    self._annotation_links[name] = self._annotation_links.pop(name)
+        links.append({'locked': locked, 'node identifiers': [node_id0, node_id1]})
 
-    def get_linked_nodes(self):
+    def get_annotation_links(self):
         """
         :return: Map annotation name -> list of paired nodes from segment1 and segment2
         """
-        return self._linked_nodes
+        return self._annotation_links
 
     def get_coordinates_midpoint(self):
         """
@@ -172,11 +216,12 @@ class Connection:
         nodes = self._region.getFieldmodule().findNodesetByFieldDomainType(Field.DOMAIN_TYPE_NODES)
         return evaluate_field_nodeset_range(self._coordinates, nodes)
 
-    def auto_align_segment(self, dependent_segment_index):
+    def auto_align_segment(self, dependent_segment_index, minimum_gap=0.0):
         """
         Optimise transformation of one connected segment relative to the other, by getting best fit
         alignment and connection between nearest end points between them.
         :param dependent_segment_index: Index of segment to optimise transformation of.
+        :param minimum_gap: Minimum gap between aligned segments.
         """
         segments_count = len(self._segments)
         if (dependent_segment_index < 0) or (dependent_segment_index >= segments_count):
@@ -186,79 +231,116 @@ class Connection:
             logger.error("auto_align_segment.  Not implemented for " + str(segments_count) + " segments")
             return
         fixed_segment_index = 1 if (dependent_segment_index == 0) else 0
-        segment_end_point_data = []
-        initial_rotation = []
-        initial_rotation_matrix = []
-        for s, segment in enumerate(self._segments):
-            translation = segment.get_translation()
-            rotation = [math.radians(angle_degrees) for angle_degrees in segment.get_rotation()]
-            initial_rotation.append(rotation)
-            rotation_matrix = euler_to_rotation_matrix(rotation) if (rotation != [0.0, 0.0, 0.0]) else None
-            initial_rotation_matrix.append(rotation_matrix)
-            end_point_data = []
-            raw_end_point_data = segment.get_end_point_data()
-            for node_id, data in raw_end_point_data.items():
-                coordinates, direction, radius, annotation = data
-                transformed_coordinates = coordinates
-                if (annotation is not None) and annotation.get_category().is_connectable():
-                    if rotation_matrix:
-                        transformed_coordinates = matrix_vector_mult(rotation_matrix, transformed_coordinates)
-                    transformed_coordinates = add(transformed_coordinates, translation)
-                    end_point_data.append((node_id, transformed_coordinates, coordinates, direction, radius, annotation))
-            segment_end_point_data.append(end_point_data)
 
-        mean_coordinates = []
-        mean_directions = []
-        for s, segment in enumerate(self._segments):
-            distances = []
-            max_distance = None
-            for node_id0, transformed_coordinates0, _, _, _, annotation0 in segment_end_point_data[s]:
-                category0 = annotation0.get_category()
-                distance = None
-                for node_id1, transformed_coordinates1, _, _, _, annotation1 in segment_end_point_data[s - 1]:
-                    category1 = annotation1.get_category()
-                    if (category0 != category1) or (
-                            (category0 == AnnotationCategory.INDEPENDENT_NETWORK) and (annotation0 != annotation1)):
-                        continue  # end points are not allowed to join
-                    tmp_distance = magnitude(sub(transformed_coordinates0, transformed_coordinates1))
-                    if (distance is None) or (tmp_distance < distance):
-                        distance = tmp_distance
-                if (distance is not None) and ((max_distance is None) or (distance > max_distance)):
-                    max_distance = distance
-                distances.append(distance)
-            if max_distance is None:
-                print("Segmentation Stitcher.  No connectable points to optimise transformation with")
-                return
-            nearby_proportion = 0.1  # proportion of max distance under which distance weighting is the same
-            nearby_distance = max_distance * nearby_proportion
-            sum_coordinates = [0.0, 0.0, 0.0]
-            sum_direction = [0.0, 0.0, 0.0]
-            total_weight = 0.0
-            for p, data in enumerate(segment_end_point_data[s]):
-                distance = distances[p]
-                if distance is None:
-                    continue
-                _, transformed_coordinates, coordinates, direction, radius, annotation = data
-                if distance < nearby_distance:
-                    distance = nearby_distance
-                weight = annotation.get_align_weight() * radius * radius / (distance * distance)
-                sum_coordinates = add(sum_coordinates, mult(coordinates, weight))
-                sum_direction = add(sum_direction, mult(direction, weight))
-                total_weight += weight
-            mean_coordinates.append(div(sum_coordinates, total_weight))
-            mean_directions.append(div(sum_direction, total_weight))
-        unit_mean_directions = [normalize(v) for v in mean_directions]
-        mean_transformed_coordinates = []
-        unit_mean_transformed_directions = []
-        for s, segment in enumerate(self._segments):
-            x = mean_coordinates[s]
-            d = mean_directions[s]
-            if initial_rotation_matrix[s]:
-                x = matrix_vector_mult(initial_rotation_matrix[s], x)
-                d = matrix_vector_mult(initial_rotation_matrix[s], d)
-            x = add(x, segment.get_translation())
-            mean_transformed_coordinates.append(x)
-            unit_mean_transformed_directions.append(normalize(d))
+        number_of_iterations = 2  # so second iteration starts reliably close
+        for iter in range(number_of_iterations):
+            # get segment transformations and apply to end points
+            segment_end_point_data = []
+            initial_rotation_matrix = []
+            for s, segment in enumerate(self._segments):
+                translation = segment.get_translation()
+                rotation_radians = [math.radians(angle_degrees) for angle_degrees in segment.get_rotation()]
+                rotation_matrix = euler_to_rotation_matrix(rotation_radians)
+                initial_rotation_matrix.append(rotation_matrix)
+                end_point_data = []
+                raw_end_point_data = segment.get_end_point_data()
+                for node_id, data in raw_end_point_data.items():
+                    coordinates, direction, radius, annotation = data
+                    transformed_coordinates = coordinates
+                    if (annotation is not None) and annotation.get_category().is_connectable():
+                        if rotation_matrix:
+                            transformed_coordinates = matrix_vector_mult(rotation_matrix, transformed_coordinates)
+                        transformed_coordinates = add(transformed_coordinates, translation)
+                        end_point_data.append((node_id, transformed_coordinates, coordinates, direction, radius, annotation))
+                segment_end_point_data.append(end_point_data)
+
+            # get weighted mean end coordinates and directions of segment end points weighted by closeness to other segment
+            mean_end_locations = []
+            mean_end_directions = []  # unit mean untransformed directions
+            far_proportion = 0.5  # proportion of max_distance above which distance weighting is zero
+            far_distance = self._max_distance * far_proportion + minimum_gap
+            for s, segment in enumerate(self._segments):
+                distances = []  # min transformed distance from end points of this segment to linkable end points in other
+                max_distance = None
+                remove_end_point_indexes = []
+                for index0, data0 in enumerate(segment_end_point_data[s]):
+                    node_id0, transformed_coordinates0, _, _, _, annotation0 = data0
+                    category0 = annotation0.get_category()
+                    distance = None
+                    for node_id1, transformed_coordinates1, _, _, _, annotation1 in segment_end_point_data[s - 1]:
+                        category1 = annotation1.get_category()
+                        if (category0 != category1) or (
+                                (category0 == AnnotationCategory.INDEPENDENT_NETWORK) and (annotation0 != annotation1)):
+                            continue  # end points are not allowed to join
+                        tmp_distance = magnitude(sub(transformed_coordinates0, transformed_coordinates1))
+                        if (tmp_distance < far_distance) and ((distance is None) or (tmp_distance < distance)):
+                            distance = tmp_distance
+                    if (distance is not None) and ((max_distance is None) or (distance > max_distance)):
+                        max_distance = distance
+                    if distance is None:
+                        remove_end_point_indexes.append(index0)
+                    else:
+                        distances.append(distance)  # can be None
+                if max_distance is None:
+                    logger.warning("Segmentation Stitcher.  No linkable points to optimise transformation with")
+                    return
+                for ix in reversed(remove_end_point_indexes):
+                    del segment_end_point_data[s][ix]
+                sum_coordinates = [0.0, 0.0, 0.0]
+                sum_direction = [0.0, 0.0, 0.0]
+                total_weight = 0.0
+                for distance, data in zip(distances, segment_end_point_data[s]):
+                    _, _, coordinates, direction, radius, annotation = data
+                    weight = annotation.get_align_weight() * radius * radius * (far_distance - distance)
+                    sum_coordinates = add(sum_coordinates, mult(coordinates, weight))
+                    sum_direction = add(sum_direction, mult(direction, weight))
+                    total_weight += weight
+                mean_end_direction = normalize(sum_direction)
+                mean_end_directions.append(mean_end_direction)
+                mean_coordinates = div(sum_coordinates, total_weight)
+                # get mean_end_locations at furthermost point in mean_end_direction
+                mean_projection = dot(mean_coordinates, mean_end_direction)
+                max_projection = mean_projection
+                for data in segment_end_point_data[s]:
+                    coordinates = data[2]
+                    projection = dot(coordinates, mean_end_direction)
+                    if projection > max_projection:
+                        max_projection = projection
+                # add half minimum gap to each side
+                offset = max_projection - mean_projection + 0.5 * minimum_gap
+                mean_end_locations.append(add(mean_coordinates, mult(mean_end_direction, offset)))
+
+            # get angle axis transformation of dependent direction onto fixed direction
+            rotated_mean_end_directions = [
+                matrix_vector_mult(initial_rotation_matrix[s], mean_end_directions[s]) for s in range(2)]
+            # need to reverse fixed direction so inline
+            axis = cross(rotated_mean_end_directions[dependent_segment_index],
+                         [-d for d in rotated_mean_end_directions[fixed_segment_index]])
+            mag_axis = magnitude(axis)
+            rotation_matrix = initial_rotation_matrix[dependent_segment_index]
+            if mag_axis > 1.0E-6:
+                axis = div(axis, mag_axis)
+                theta = math.asin(mag_axis)
+                axis_angle_rotation_matrix = axis_angle_to_rotation_matrix(axis, theta)
+                rotation_matrix = matrix_mult(axis_angle_rotation_matrix, rotation_matrix)
+                rotation_radians = rotation_matrix_to_euler(rotation_matrix)
+                rotation = [math.degrees(angle_radians) for angle_radians in rotation_radians]
+            else:
+                rotation = self._segments[dependent_segment_index].get_rotation()
+            dependent_rotated_end_location = matrix_vector_mult(
+                rotation_matrix, mean_end_locations[dependent_segment_index])
+            fixed_rotated_end_location = add(
+                matrix_vector_mult(initial_rotation_matrix[fixed_segment_index], mean_end_locations[fixed_segment_index]),
+                self._segments[fixed_segment_index].get_translation())
+            translation = sub(fixed_rotated_end_location, dependent_rotated_end_location)
+
+            # first part:
+            dependent_segment = self._segments[dependent_segment_index]
+            dependent_segment.set_rotation(rotation, notify=False)
+            dependent_segment.set_translation(translation, notify=False)
+
+        dependent_segment.set_translation(translation)  # GRC temporary to force notification
+        return
 
         # optimise transformation of dependent segment so mean coordinates and directions coincide
 
@@ -271,14 +353,13 @@ class Connection:
 
         # note the result is dependent on the initial position, but final optimisation should reduce effect
         # get a side direction to minimise the unconstrained twist from the current direction
-        dependent_segment = self._segments[dependent_segment_index]
         dependent_segment_end_point_data = segment_end_point_data[dependent_segment_index]
         axis = [1.0, 0.0, 0.0]
-        if dot(unit_mean_transformed_directions[fixed_segment_index], axis) < 0.1:
+        if dot(transformed_mean_directions[fixed_segment_index], axis) < 0.1:
             axis = [0.0, 1.0, 0.0]
-        target_side = normalize(cross(unit_mean_transformed_directions[fixed_segment_index], axis))
+        target_side = normalize(cross(transformed_mean_directions[fixed_segment_index], axis))
         source_side = normalize(
-            cross(cross(target_side, unit_mean_transformed_directions[dependent_segment_index]), unit_mean_transformed_directions[dependent_segment_index]))
+            cross(cross(target_side, transformed_mean_directions[dependent_segment_index]), transformed_mean_directions[dependent_segment_index]))
         if initial_rotation_matrix[dependent_segment_index]:
             transformed_source_side = source_side
             inverse_rotation_matrix = matrix_inv(initial_rotation_matrix[dependent_segment_index])
@@ -286,11 +367,11 @@ class Connection:
         initial_angles = [math.radians(angle_degrees) for angle_degrees in dependent_segment.get_rotation()]
         side_weight = 0.01  # so side has only a small effect on objective
         res = minimize(rotation_objective, initial_angles,
-                       args=(unit_mean_transformed_directions[fixed_segment_index], unit_mean_directions[dependent_segment_index],
+                       args=(transformed_mean_directions[fixed_segment_index], unit_mean_directions[dependent_segment_index],
                              mult(target_side, side_weight), mult(source_side, side_weight)),
                        method='Nelder-Mead', tol=0.001)
         if not res.success:
-            print("Segmentation Stitcher.  Could not optimise initial rotation")
+            logger.warning("Segmentation Stitcher.  Could not optimise initial rotation")
             return
         rotation = [math.degrees(angle_radians) for angle_radians in res.x]
         rotation_matrix = euler_to_rotation_matrix(res.x)
@@ -315,7 +396,11 @@ class Connection:
             total_overlap += max_overlap
         translation = sub(translation, mult(unit_transformed_direction, total_overlap))
         dependent_segment.set_rotation(rotation, notify=False)
-        dependent_segment.set_translation(translation, notify=False)
+        # dependent_segment.set_translation(translation, notify=False)
+
+        # GRC rotation only:
+        dependent_segment.set_translation(translation)
+        return
 
         # GRC temp
         # score = self.build_links(build_link_objects=False)
@@ -337,7 +422,7 @@ class Connection:
         # method='Nelder-Mead'
         res = minimize(links_objective, initial_parameters, method='Powell')  # , tol=TOL)
         if not res.success:
-            print("Segmentation Stitcher.  Could not optimise final rotation and translation")
+            logger.warning("Segmentation Stitcher.  Could not optimise final rotation and translation")
             return
         rotation = list(res.x[:3])
         translation = list(res.x[3:])
@@ -352,10 +437,19 @@ class Connection:
         :return: Total link score.
         """
         total_score = 0.0
-        remaining_radius_factor = 0.25
-        self._linked_nodes = {}
+
+        # remember locked tuples of linked nodes to re-attach in algorithm below
+        locked_node_identifiers = set()
+        annotation_names = list(self._annotation_links.keys())
+        for annotation_name in annotation_names:
+            for link in self._annotation_links[annotation_name]:
+                if link['locked']:
+                    locked_node_identifiers.add(tuple(link['node identifiers']))
+        self._annotation_links = {}
+
         # filter, transform and sort end point data from largest to smallest radius
         segment_sorted_end_point_data = []
+        min_area = None
         for s, segment in enumerate(self._segments):
             translation = segment.get_translation()
             rotation = [math.radians(angle_degrees) for angle_degrees in segment.get_rotation()]
@@ -365,76 +459,209 @@ class Connection:
             end_point_data = segment.get_end_point_data()
             for node_id, data in end_point_data.items():
                 coordinates, direction, radius, annotation = data
+                area = math.pi * radius * radius
+                if (min_area is None) or (area < min_area):
+                    min_area = area
                 if (annotation is not None) and annotation.get_category().is_connectable():
                     if rotation_matrix:
                         coordinates = matrix_vector_mult(rotation_matrix, coordinates)
                         direction = matrix_vector_mult(rotation_matrix, direction)
                     coordinates = add(coordinates, translation)
-
                     for i, data in enumerate(sorted_end_point_data):
-                        if radius > data[3]:
+                        if area > data[3]:
                             break
                     else:
                         i = len(sorted_end_point_data)
-                    sorted_end_point_data.insert(i, (node_id, coordinates, direction, radius, annotation))
+                    sorted_end_point_data.insert(i, [node_id, coordinates, direction, area, annotation])
             segment_sorted_end_point_data.append(sorted_end_point_data)
         sorted_end_point_data0 = segment_sorted_end_point_data[0]
         sorted_end_point_data1 = segment_sorted_end_point_data[1]
+        min_area *= 0.5  # so reliably below smallest end point area
 
-        while len(sorted_end_point_data0):
-            end_point_data0 = sorted_end_point_data0[0]
-            node_id0, coordinates0, direction0, radius0, annotation0 = end_point_data0
-            category0 = annotation0.get_category()
-            best_index1 = None
-            lowest_score = 0.0
-            weight = None
+        # make 2D array of base score independent of area and exclusivity
+        base_scores0 = []  # index over segment 0 endpoints, then segment 1
+        max_mag_delta_coordinates = 0.5 * self._max_distance
+        # below this proportion of max_mag_delta_coordinates the closeness score is the same:
+        min_relative_distance = 0.01
+        worst_base_score = 2.0
+        for index0, end_point_data0 in enumerate(sorted_end_point_data0):
+            node_id0, coordinates0, direction0, area0, annotation0 = end_point_data0
+            scores1 = []
             for index1, end_point_data1 in enumerate(sorted_end_point_data1):
-                node_id1, coordinates1, direction1, radius1, annotation1 = end_point_data1
-                category1 = annotation1.get_category()
-                # inter-segment links are only to the same annotation; links within category will be done separately
+                node_id1, coordinates1, direction1, area1, annotation1 = end_point_data1
+                # presently only allow links between same annotation even within network group
                 if annotation0 != annotation1:
-                    continue  # end points are not allowed to join
+                    scores1.append(worst_base_score)
+                    continue  # end points have different annotation
                 direction_score = math.fabs(1.0 + dot(direction0, direction1))
+                # direction_score = -dot(direction0, direction1)
                 if direction_score > 0.5:  # arbitrary factor
+                    scores1.append(worst_base_score)
                     continue  # end points are not pointing towards each other
                 delta_coordinates = sub(coordinates1, coordinates0)
                 mag_delta_coordinates = magnitude(delta_coordinates)
-                tdistance = dot(direction0, delta_coordinates)
-                ndistance = math.sqrt(mag_delta_coordinates * mag_delta_coordinates - tdistance * tdistance)
-                if mag_delta_coordinates > (0.5 * self._max_distance):
-                     continue  # point is too far away
-                distance_score = ((tdistance * tdistance + 100.0 * ndistance * ndistance) /
-                                  (self._max_distance * self._max_distance))
-                tfactor = math.exp(-1000.0 * tdistance / self._max_distance) + 1.0  # arbitrary factor
-                penetration_distance_score = ((tfactor * tdistance * tdistance) /
-                                              (self._max_distance * self._max_distance))
-                delta_radius = (radius0 - radius1) / self._max_distance  # GRC temporary - use a different scale
-                radius_score = delta_radius * delta_radius
-                score = radius0 * (10.0 * direction_score + distance_score + radius_score)
-                if (best_index1 is None) or (score < lowest_score):
-                    best_index1 = index1
-                    weight = 0.5 * (annotation0.get_align_weight() + annotation1.get_align_weight())
-                    lowest_score = score + penetration_distance_score
-            if best_index1 is not None:
-                # if category0 != AnnotationCategory.NETWORK_GROUP_1:
-                total_score += weight * lowest_score
-                node_id1, coordinates1, direction1, radius1, annotation1 = sorted_end_point_data1[best_index1]
-                self.add_linked_nodes(annotation1, node_id0, node_id1)
-                remaining_radius = math.sqrt(math.fabs(radius0 * radius0 - radius1 * radius1))
-                if (radius0 > radius1) and (remaining_radius > remaining_radius_factor * radius0):
-                    for i in range(1, len(sorted_end_point_data0)):
-                        if remaining_radius > sorted_end_point_data0[i][3]:
-                            break
-                    # sorted_end_point_data0.insert(i, (node_id0, coordinates0, direction0, remaining_radius, annotation0))
-                elif remaining_radius > (remaining_radius_factor * radius1):
-                    for i in range(best_index1, len(sorted_end_point_data1)):
-                        if remaining_radius > sorted_end_point_data1[i][3]:
-                            break
-                    # sorted_end_point_data1.insert(i, (node_id1, coordinates1, direction1, remaining_radius, annotation1))
-                sorted_end_point_data1.pop(best_index1)
-            else:
-                total_score += radius0 * 20.0  # arbitrary factor
-            sorted_end_point_data0.pop(0)
+                if mag_delta_coordinates > max_mag_delta_coordinates:
+                    scores1.append(worst_base_score)
+                    continue  # end point are too far away from each other
+                relative_distance = mag_delta_coordinates / max_mag_delta_coordinates
+                closeness_score = relative_distance
+                # if relative_distance < min_relative_distance:
+                #     closeness_score = 1.0
+                # else:
+                #     closeness_score = min_relative_distance / relative_distance
+                # closeness_score = 1.0 - mag_delta_coordinates / max_mag_delta_coordinates
+                # closeness_score *= closeness_score  # square it so more significant effect close by
+                # align_score is a measure of how in-line the other end points are with each point and direction
+                if mag_delta_coordinates == 0.0:
+                    align_score = 0.5
+                else:
+                    t0 = dot(direction0, delta_coordinates)
+                    n0 = math.sqrt(mag_delta_coordinates * mag_delta_coordinates - t0 * t0)
+                    t1 = dot(direction1, delta_coordinates)
+                    n1 = math.sqrt(mag_delta_coordinates * mag_delta_coordinates - t1 * t1)
+                    # lowest align score is 0.5
+                    align_score = 0.5 + 0.25 * (n0 + n1) / mag_delta_coordinates
+                score = closeness_score * align_score * direction_score
+                scores1.append(score)
+            base_scores0.append(scores1)
+
+        def get_minimums_ratio(scores):
+            """
+            Get ratio of lowest / next lowest score as measure of 'only optiob' for first link to end point.
+            :param scores:
+            :return:
+            """
+            if len(scores1) >= 2:
+                min1 = min2 = float('inf')
+                for score in scores1:
+                    if score < min1:
+                        min1, min2 = score, min1
+                    elif score < min2:
+                        min2 = score
+                return min1 / min2
+            return 1.0
+
+        base_scores1 = [[score1[index1] for score1 in base_scores0] for index1 in range(len(sorted_end_point_data1))]
+        exclusive_base_scores0 = [get_minimums_ratio(scores1) for scores1 in base_scores0]
+        exclusive_base_scores1 = [get_minimums_ratio(scores0) for scores0 in base_scores1]
+        links_count0 = [0.0] * len(exclusive_base_scores0)
+        links_count1 = [0.0] * len(exclusive_base_scores1)
+
+        print("Start")
+        best_score = 1.0
+        while best_score is not None:
+            best_score = None
+            best_area = 0.0
+            best_indexes = None
+            locked = False
+            for index0, end_point_data0 in enumerate(sorted_end_point_data0):
+                node_id0 = end_point_data0[0]
+                area0 = end_point_data0[3]
+                base_scores1 = base_scores0[index0]
+                for index1, end_point_data1 in enumerate(sorted_end_point_data1):
+                    base_score = base_scores1[index1]
+                    if base_score >= worst_base_score:
+                        continue
+                    node_id1 = end_point_data1[0]
+                    area1 = end_point_data1[3]
+                    area = min(area0, area1)
+                    indexes = (index0, index1)
+                    node_identifiers = (node_id0, node_id1)
+                    if node_identifiers in locked_node_identifiers:
+                        best_area = max(min_area, area)  # don't want area to get negative
+                        best_score = base_score / best_area
+                        best_indexes = indexes
+                        locked_node_identifiers.remove(node_identifiers)
+                        locked = True
+                        break
+                    else:
+                        if area < min_area:
+                            continue
+                        score = base_score / area
+                        # lower score for first links by factor indicating 'only option'
+                        exclusive_base_scores = []
+                        if links_count0[index0] == 0:
+                            exclusive_base_scores.append(exclusive_base_scores0[index0])
+                        if links_count1[index1] == 0:
+                            exclusive_base_scores.append(exclusive_base_scores1[index1])
+                        if exclusive_base_scores:
+                            score *= min(exclusive_base_scores)
+                        if (best_score is None) or (score < best_score):
+                            best_score = score
+                            best_area = area
+                            best_indexes = indexes
+                if locked:
+                    break
+            if best_score is not None:
+                end_point_data0 = sorted_end_point_data0[best_indexes[0]]
+                node_id0 = end_point_data0[0]
+                annotation = end_point_data0[4]
+                end_point_data1 = sorted_end_point_data1[best_indexes[1]]
+                node_id1 = end_point_data1[0]
+                self.add_linked_nodes(annotation, node_id0, node_id1)
+                print("Link nodes", node_id0, node_id1, "score", best_score, "area", best_area, end_point_data0[-1].get_name())
+                end_point_data0[3] -= best_area
+                end_point_data1[3] -= best_area
+                links_count0[best_indexes[0]] += 1
+                links_count1[best_indexes[1]] += 1
+                # penetration score is only used for total score used by auto align
+                penetration_score = 0.0  # GRC todo
+                total_score += best_score * best_area + penetration_score
+
+        # while len(sorted_end_point_data0):
+        #     end_point_data0 = sorted_end_point_data0[0]
+        #     node_id0, coordinates0, direction0, radius0, annotation0 = end_point_data0
+        #     category0 = annotation0.get_category()
+        #     best_index1 = None
+        #     lowest_score = 0.0
+        #     weight = None
+        #     for index1, end_point_data1 in enumerate(sorted_end_point_data1):
+        #         node_id1, coordinates1, direction1, radius1, annotation1 = end_point_data1
+        #         category1 = annotation1.get_category()
+        #         # inter-segment links are only to the same annotation; links within category will be done separately
+        #         if annotation0 != annotation1:
+        #             continue  # end points are not allowed to join
+        #         direction_score = math.fabs(1.0 + dot(direction0, direction1))
+        #         if direction_score > 0.5:  # arbitrary factor
+        #             continue  # end points are not pointing towards each other
+        #         delta_coordinates = sub(coordinates1, coordinates0)
+        #         mag_delta_coordinates = magnitude(delta_coordinates)
+        #         tdistance = dot(direction0, delta_coordinates)
+        #         ndistance = math.sqrt(mag_delta_coordinates * mag_delta_coordinates - tdistance * tdistance)
+        #         if mag_delta_coordinates > (0.5 * self._max_distance):
+        #              continue  # point is too far away
+        #         distance_score = ((tdistance * tdistance + 100.0 * ndistance * ndistance) /
+        #                           (self._max_distance * self._max_distance))
+        #         tfactor = math.exp(-1000.0 * tdistance / self._max_distance) + 1.0  # arbitrary factor
+        #         penetration_distance_score = ((tfactor * tdistance * tdistance) /
+        #                                       (self._max_distance * self._max_distance))
+        #         delta_radius = (radius0 - radius1) / self._max_distance  # GRC temporary - use a different scale
+        #         radius_score = delta_radius * delta_radius
+        #         score = radius0 * (10.0 * direction_score + distance_score + radius_score)
+        #         if (best_index1 is None) or (score < lowest_score):
+        #             best_index1 = index1
+        #             weight = 0.5 * (annotation0.get_align_weight() + annotation1.get_align_weight())
+        #             lowest_score = score + penetration_distance_score
+        #     if best_index1 is not None:
+        #         # if category0 != AnnotationCategory.NETWORK_GROUP_1:
+        #         total_score += weight * lowest_score
+        #         node_id1, coordinates1, direction1, radius1, annotation1 = sorted_end_point_data1[best_index1]
+        #         self.add_linked_nodes(annotation1, node_id0, node_id1)
+        #         remaining_radius = math.sqrt(math.fabs(radius0 * radius0 - radius1 * radius1))
+        #         if (radius0 > radius1) and (remaining_radius > remaining_radius_factor * radius0):
+        #             for i in range(1, len(sorted_end_point_data0)):
+        #                 if remaining_radius > sorted_end_point_data0[i][3]:
+        #                     break
+        #             # sorted_end_point_data0.insert(i, (node_id0, coordinates0, direction0, remaining_radius, annotation0))
+        #         elif remaining_radius > (remaining_radius_factor * radius1):
+        #             for i in range(best_index1, len(sorted_end_point_data1)):
+        #                 if remaining_radius > sorted_end_point_data1[i][3]:
+        #                     break
+        #             # sorted_end_point_data1.insert(i, (node_id1, coordinates1, direction1, remaining_radius, annotation1))
+        #         sorted_end_point_data1.pop(best_index1)
+        #     else:
+        #         total_score += radius0 * 20.0  # arbitrary factor
+        #     sorted_end_point_data0.pop(0)
 
         if build_link_objects:
             self._build_link_objects()
@@ -484,13 +711,14 @@ class Connection:
         with (ChangeManager(fieldmodule)):
             mesh1d.destroyAllElements()
             nodes.destroyAllNodes()
-            for group_name, linked_nodes_list in self._linked_nodes.items():
-                group = find_or_create_field_group(fieldmodule, group_name)
+            for annotation_name, links in self._annotation_links.items():
+                group = find_or_create_field_group(fieldmodule, annotation_name)
                 nodeset_group = group.getOrCreateNodesetGroup(nodes)
                 mesh_group = group.getOrCreateMeshGroup(mesh1d)
-                for linked_nodes in linked_nodes_list:
+                for link in links:
+                    node_identifiers = link['node identifiers']
                     cnode_ids = [None, None]
-                    for s, snode_id in enumerate(linked_nodes):
+                    for s, snode_id in enumerate(node_identifiers):
                         cnode_ids[s] = snode_id_to_cnode_id[s].get(snode_id)
                         if not cnode_ids[s]:
                             snode = snodes[s].findNodeByIdentifier(snode_id)

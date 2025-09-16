@@ -140,6 +140,14 @@ class Segment:
                         for control_point in control_points:
                             marker_labels.append(control_point["label"])
                             x = control_point["position"]
+                            if "C1L" in self._name:
+                                x = [-1000.0 * x[1] - 4500.0, 1000.0 * x[0] + 2250.0, -1000.0 * x[2] + 11500.0]
+                            elif any(s in self._name for s in ["T5L", "T6L"]):
+                                x = [-1000.0 * x[1] - 9500.0, 1000.0 * x[0] + 5000.0, -1000.0 * x[2]]
+                            elif any(s in self._name for s in ["C2L", "C4L", "T2L", "T3L", "T4L"]):
+                                x = [-9.0 * x[1], 9.0 * x[0], -9.0 * x[2]]
+                            else:
+                                x = [9.0 * x[1], -9.0 * x[0], -9.0 * x[2]]
                             marker_positions.append(x)
                         generate_datapoints(self._raw_region, marker_positions,
                                             field_names_and_values=[("marker_name", marker_labels)],
@@ -355,7 +363,7 @@ class Segment:
             if add_path_mean_r > 0.0:
                 aspect_ratio += add_path_length / add_path_mean_r
         # 2nd iteration of fit line removes outliers:
-        start_x, end_x, mean_r = fit_line(path_coordinates, path_radii, start_x, end_x, 0.5)[0:3]
+        start_x, end_x, mean_r = fit_line(path_coordinates, path_radii, start_x, end_x, 0.25)[0:3]
         return path_coordinates, path_radii, path_node_ids, path_group, start_x, end_x, mean_r
 
     def create_end_point_directions(self, annotations, max_distance):

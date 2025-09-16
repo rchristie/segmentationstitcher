@@ -524,14 +524,15 @@ def _output_connection_elements(connection, segment_node_maps, annotation_groups
     connection_group = find_or_create_field_group(fieldmodule, connection.get_name())
     mesh = fieldmodule.findMeshByDimension(1)
     connection_mesh_group = connection_group.getOrCreateMeshGroup(mesh)
-    linked_nodes = connection.get_linked_nodes()
-    for annotation_name, annotation_linked_nodes in linked_nodes.items():
+    annotation_links = connection.get_annotation_links()
+    for annotation_name, links in annotation_links.items():
         groups = annotation_groups.get(annotation_name)
         mesh_groups = [group.getOrCreateMeshGroup(mesh) for group in groups]
         mesh_groups.append(connection_mesh_group)
-        for segment_node_identifiers in annotation_linked_nodes:
+        for link in links:
+            node_identifiers = link['node identifiers']
             element = mesh.createElement(element_identifier, elementtemplate)
-            element.setNodesByIdentifier(eft, [segment_node_maps[n][segment_node_identifiers[n]] for n in range(2)])
+            element.setNodesByIdentifier(eft, [segment_node_maps[s][node_identifiers[s]] for s in range(2)])
             for mesh_group in mesh_groups:
                 mesh_group.addElement(element)
             element_identifier += 1
