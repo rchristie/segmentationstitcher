@@ -94,15 +94,16 @@ class Stitcher:
                         if annotation.get_name() == name:
                             existing_term = annotation.get_term()
                             if term != existing_term:
-                                print("Warning: Found existing annotation with name", name,
-                                      "but existing term", existing_term, "does not equal new term", term)
+                                logger.warning("Segment " + name + ": Found existing annotation with name " + name +
+                                               " but existing term " + str(existing_term) +
+                                               " does not equal new term " + str(term))
                                 if term and (existing_term is None):
                                     annotation.set_term(term)
                             break  # exists already
                         if name > annotation.get_name():
                             index += 1
                     else:
-                        # print("Add annoation name", name, "term", term, "dim", segment_annotation.get_dimension(),
+                        # print("Add annotation name", name, "term", term, "dim", segment_annotation.get_dimension(),
                         #       "category", segment_annotation.get_category())
                         self._annotations.insert(index, segment_annotation)
             # by default put all GENERAL annotations without terms into the EXCLUDE category, except "marker"
@@ -156,8 +157,8 @@ class Stitcher:
                     processed_count += 1
                     break
             else:
-                print("WARNING: Segmentation Stitcher.  Annotation with name", name, "term", term,
-                      "in settings not found; ignoring. Have input files changed?")
+                logger.warning("Segmentation Stitcher.  Annotation with name " + name + " term " + str(term) +
+                               "in settings not found; ignoring. Have input files changed?")
         if processed_count != len(self._annotations):
             for annotation in self._annotations:
                 name = annotation.get_name()
@@ -166,8 +167,8 @@ class Stitcher:
                     if (annotation_settings["name"] == name) and (annotation_settings["term"] == term):
                         break
                 else:
-                    print("WARNING: Segmentation Stitcher.  Annotation with name", name, "term", term,
-                          "not found in settings; using defaults. Have input files changed?")
+                    logger.warning("Segmentation Stitcher.  Annotation with name " + name + " term " + str(term) +
+                                   "not found in settings; using defaults. Have input files changed?")
 
         # update segment settings and warn about differences
         processed_count = 0

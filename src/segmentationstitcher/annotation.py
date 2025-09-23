@@ -5,6 +5,10 @@ from enum import Enum
 from cmlibs.utils.zinc.field import get_group_list
 from cmlibs.utils.zinc.group import group_get_highest_dimension, groups_have_same_local_contents
 from cmlibs.zinc.field import Field
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 class AnnotationCategory(Enum):
@@ -62,8 +66,8 @@ class Annotation:
         assert (settings_in.get("name") == self._name) and (settings_in.get("term") == self._term)
         settings_dimension = settings_in.get("dimension")
         if settings_dimension != self._dimension:
-            print("WARNING: Segmentation Stitcher.  Annotation with name", self._name, "term", self._term,
-                  "was dimension ", settings_dimension, "in settings, is now ", self._dimension,
+            logger.warning("Segmentation Stitcher.  Annotation with name " + self._name, " term " + str(self._term) +
+                  "was dimension " + str(settings_dimension), "in settings, is now " + str(self._dimension) +
                   ". Have input files changed?")
             settings_in["dimension"] = self._dimension
         # update current settings to gain new ones and override old ones
@@ -152,6 +156,15 @@ def region_get_annotations(region, network_group1_keywords, network_group2_keywo
     annotations = []
     term_annotations = []
     datapoints = fieldmodule.findNodesetByFieldDomainType(Field.DOMAIN_TYPE_DATAPOINTS)
+    # these terms have had slight mismatches with contents of url group, so explicitly matching:
+    segment_name = region.getParent().getName()
+    known_terms = {
+        "epineurium": "http://uri.interlex.org/base/ilx_0103892",
+        "left cervical vagus nerve": "http://uri.interlex.org/base/ilx_0794142",
+        "right cervical vagus nerve": "http://uri.interlex.org/base/ilx_0794141",
+        "left thoracic vagus nerve": "http://uri.interlex.org/base/ilx_0787543",
+        "right thoracic vagus nerve": "http://uri.interlex.org/base/ilx_0786664"
+    }
     for group in groups:
         # clean up name to remove case and leading/trailing whitespace
         name = group.getName().strip()
@@ -165,6 +178,8 @@ def region_get_annotations(region, network_group1_keywords, network_group2_keywo
                 continue  # empty group
         if lower_name.isdigit():
             continue  # ignore as these can never be valid annotation names
+        if '<property name=' in lower_name:
+            continue  # don't want these groups output by mbfxml2ex
         category = AnnotationCategory.GENERAL
         for keyword in network_group1_keywords:
             if keyword in lower_name:
@@ -175,7 +190,8 @@ def region_get_annotations(region, network_group1_keywords, network_group2_keywo
                 if keyword in lower_name:
                     category = AnnotationCategory.NETWORK_GROUP_2
                     break
-        annotation = Annotation(name, None, dimension, category)
+        term = known_terms.get(name)
+        annotation = Annotation(name, term, dimension, category)
         is_term = False
         if category == AnnotationCategory.GENERAL:
             for keyword in term_keywords:
@@ -186,23 +202,35 @@ def region_get_annotations(region, network_group1_keywords, network_group2_keywo
             term_annotations.append(annotation)
         else:
             annotations.append(annotation)
+
     for term_annotation in term_annotations:
         term = term_annotation.get_name()
         term_group = fieldmodule.findFieldByName(term).castGroup()
         dimension = term_annotation.get_dimension()
         for annotation in annotations:
-            if annotation.get_term() is not None:
-                continue
             if annotation.get_dimension() != dimension:
                 continue
             name = annotation.get_name()
             name_group = fieldmodule.findFieldByName(name).castGroup()
             if groups_have_same_local_contents(name_group, term_group):
-                annotation.set_term(term)
+                old_term = annotation.get_term()
+                if old_term:
+                    if old_term != term:
+                        logger.warning("Segment " + segment_name + ": " +
+                            "Annotation name " + name + " already has term " + old_term +
+                            " but matched group with term " + term + ". Keeping original term.")
+                else:
+                    annotation.set_term(term)
                 break
+            else:
+                known_term = known_terms.get(name.lower())
+                if known_term == term:
+                    logger.warning("Segment " + segment_name + ": " +
+                        "Known annotation name " + name + " and term " + term + " groups differ. Using name group.")
+                    break
         else:
-            print("WARNING: Segmentation Stitcher.  Did not find matching annotation name for term", term,
-                  ". Adding separate annotation.")
+            logger.warning("Segment " + segment_name + ": " +
+                  ".  Did not find matching annotation name for term" + term + ". Adding separate annotation.")
             term_annotation.set_term(term)
             index = 0
             for annotation in annotations:

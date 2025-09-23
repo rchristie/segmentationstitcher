@@ -196,19 +196,29 @@ class Segment:
 
     def _element_id_to_group(self, element_id, annotations):
         """
-        Get the first Annotation zinc Group containing raw element of supplied identifier.
+        Get the first Annotation zinc Group containing raw element of supplied identifier, prioritizing
+        any annotation group with term ids.
         :param node_id: Identifier of [end] node to query.
         :param annotations: Global list of all annotations.
         :return: Zinc Group, MeshGroup or None, None if not found.
         """
         element = self._raw_mesh1d.findElementByIdentifier(element_id)
+        best_group = None
+        best_mesh_group = None
         for annotation in annotations:
+            has_term = (annotation.get_term() is not None) and (not "http" in annotation.get_name())
+            if best_group and not has_term:
+                continue
             group = self._raw_fieldmodule.findFieldByName(annotation.get_name()).castGroup()
             if group.isValid():
                 mesh_group = group.getMeshGroup(self._raw_mesh1d)
                 if mesh_group.isValid() and mesh_group.containsElement(element):
-                    return group, mesh_group
-        return None, None
+                    best_group = group
+                    best_mesh_group = mesh_group
+                    if has_term:
+                        # print("Found group", annotation.get_name(), annotation.get_term())
+                        break
+        return best_group, best_mesh_group
 
     def _track_segment(self, start_node_id, start_element_id,
                        max_length=None, min_element_count=None, min_aspect_ratio=None):
@@ -390,6 +400,8 @@ class Segment:
                     if tmp_annotation.get_name() == annotation_group_name:
                         annotation = tmp_annotation
                         break
+            else:
+                print("No annotation group for node", end_node_id)
             self._end_point_data[end_node_id] = (start_x, normalize(direction), mean_r, annotation)
             # set up visualization objects. End direction datapoints have same identifiers as raw end nodes
             node = self._working_datapoints.createNode(end_node_id, nodetemplate)
