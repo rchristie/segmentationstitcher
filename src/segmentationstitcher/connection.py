@@ -4,10 +4,11 @@ A connection between segments in the segmentation data.
 from cmlibs.maths.vectorops import (
     add, axis_angle_to_rotation_matrix, cross, dot, div, euler_to_rotation_matrix, magnitude, matrix_inv, matrix_mult,
     matrix_vector_mult, mult, normalize, rotation_matrix_to_euler, sub)
+from cmlibs.utils.zinc.scene import scene_get_or_create_selection_group
 from cmlibs.utils.zinc.field import (
     find_or_create_field_coordinates, find_or_create_field_finite_element, find_or_create_field_group)
 from cmlibs.utils.zinc.finiteelement import evaluate_field_nodeset_range
-from cmlibs.utils.zinc.general import ChangeManager
+from cmlibs.utils.zinc.general import ChangeManager, HierarchicalChangeManager
 from cmlibs.utils.zinc.group import group_add_group_local_contents
 from cmlibs.zinc.element import Element, Elementbasis
 from cmlibs.zinc.field import Field
@@ -51,7 +52,7 @@ class Connection:
                 group = fieldmodule.createFieldGroup()
                 group.setName(group_name)
                 group.setManaged(True)
-        self._annotation_links = {}  # dict: annotation name --> list of {'locked': bool, 'node identifiers': list}
+        self._annotation_links = {}  # dict: annotation name --> list of {'lock': bool, 'node identifiers': list}
         for segment in self._segments:
             segment.add_transformation_change_callback(self._segment_transformation_change)
 
@@ -84,7 +85,7 @@ class Connection:
                 new_links = []
                 if isinstance(links[0], list):
                     for node_identifiers in links:
-                        new_links.append({'locked': False, 'node identifiers': node_identifiers})
+                        new_links.append({'lock': False, 'node identifiers': node_identifiers})
                 annotation_links[annotation_name] = new_links
             del settings['linked nodes']
             settings['annotation links'] = annotation_links
@@ -174,12 +175,12 @@ class Connection:
         self.build_links()
         self.update_annotation_category_groups(self._annotations)
 
-    def add_linked_nodes(self, annotation, node_id0, node_id1, locked=False):
+    def add_linked_nodes(self, annotation, node_id0, node_id1, lock=False):
         """
         :param annotation: Annotation to use for link.
         :param node_id0: Node identifier to link from segment[0].
         :param node_id1: Node identifier to link from segment[1].
-        :param locked: True if link is
+        :param lock: True to keep link connected until unlocked.
         """
         annotation_name = annotation.get_name()
         links = self._annotation_links.get(annotation_name)
@@ -190,7 +191,7 @@ class Connection:
             for name in list(self._annotation_links.keys()):
                 if name > annotation_name:
                     self._annotation_links[name] = self._annotation_links.pop(name)
-        links.append({'locked': locked, 'node identifiers': [node_id0, node_id1]})
+        links.append({'lock': lock, 'node identifiers': [node_id0, node_id1]})
 
     def get_annotation_links(self):
         """
@@ -443,7 +444,7 @@ class Connection:
         annotation_names = list(self._annotation_links.keys())
         for annotation_name in annotation_names:
             for link in self._annotation_links[annotation_name]:
-                if link['locked']:
+                if link['lock']:
                     locked_node_identifiers.add(tuple(link['node identifiers']))
         self._annotation_links = {}
 
@@ -484,7 +485,7 @@ class Connection:
         max_mag_delta_coordinates = 0.5 * self._max_distance
         # below this proportion of max_mag_delta_coordinates the closeness score is the same:
         min_relative_distance = 0.01
-        worst_base_score = None
+        worst_base_score = 10.0
         for index0, end_point_data0 in enumerate(sorted_end_point_data0):
             node_id0, coordinates0, direction0, area0, annotation0 = end_point_data0
             base_scores1 = []
@@ -495,15 +496,15 @@ class Connection:
                     base_scores1.append(worst_base_score)
                     continue  # end points have different annotation
                 dot_directions = dot(direction0, direction1)  # -1.0 if perfectly pointing at each other
-                if dot_directions > 0.2:  # arbitrary factor
-                    base_scores1.append(worst_base_score)
-                    continue  # end points are not pointing towards each other
+                # if dot_directions > 0.2:  # arbitrary factor
+                #     base_scores1.append(worst_base_score)
+                #     continue  # end points are not pointing towards each other
                 direction_score = 0.2 + (0.8 / 1.2) * (1.0 + dot_directions)  # minimum 0.2
                 delta_coordinates = sub(coordinates1, coordinates0)
                 mag_delta_coordinates = magnitude(delta_coordinates)
-                if mag_delta_coordinates > max_mag_delta_coordinates:
-                    base_scores1.append(worst_base_score)
-                    continue  # end point are too far away from each other
+                # if mag_delta_coordinates > max_mag_delta_coordinates:
+                #     base_scores1.append(worst_base_score)
+                #     continue  # end point are too far away from each other
                 relative_distance = mag_delta_coordinates / max_mag_delta_coordinates
                 closeness_score = max(relative_distance, min_relative_distance)
                 if mag_delta_coordinates == 0.0:
@@ -549,15 +550,13 @@ class Connection:
             best_nonexclusive_score = None
             best_area = 0.0
             best_indexes = None
-            locked = False
+            lock = False
             for index0, end_point_data0 in enumerate(sorted_end_point_data0):
                 node_id0 = end_point_data0[0]
                 area0 = end_point_data0[3]
                 base_scores1 = base_scores0[index0]
                 for index1, end_point_data1 in enumerate(sorted_end_point_data1):
                     base_score = base_scores1[index1]
-                    if base_score is None:
-                        continue
                     node_id1 = end_point_data1[0]
                     area1 = end_point_data1[3]
                     area = min(area0, area1)
@@ -568,7 +567,7 @@ class Connection:
                         best_nonexclusive_score = best_score = base_score / math.log(best_area)
                         best_indexes = indexes
                         locked_node_identifiers.remove(node_identifiers)
-                        locked = True
+                        lock = True
                         break
                     else:
                         if base_score > cut_off_base_score:
@@ -593,7 +592,7 @@ class Connection:
                             best_nonexclusive_score = nonexclusive_score
                             best_area = area
                             best_indexes = indexes
-                if locked:
+                if lock:
                     break
             if best_score is not None:
                 end_point_data0 = sorted_end_point_data0[best_indexes[0]]
@@ -601,7 +600,7 @@ class Connection:
                 annotation = end_point_data0[4]
                 end_point_data1 = sorted_end_point_data1[best_indexes[1]]
                 node_id1 = end_point_data1[0]
-                self.add_linked_nodes(annotation, node_id0, node_id1)
+                self.add_linked_nodes(annotation, node_id0, node_id1, lock)
                 # print("Link nodes", node_id0, node_id1, "score", best_score, "area", best_area, end_point_data0[-1].get_name())
                 end_point_data0[3] -= best_area
                 end_point_data1[3] -= best_area
@@ -609,61 +608,6 @@ class Connection:
                 links_count1[best_indexes[1]] += 1
                 # total score is not affected by exclusive measure used to match 'only option' links
                 total_score += best_nonexclusive_score * best_area
-
-        # while len(sorted_end_point_data0):
-        #     end_point_data0 = sorted_end_point_data0[0]
-        #     node_id0, coordinates0, direction0, radius0, annotation0 = end_point_data0
-        #     category0 = annotation0.get_category()
-        #     best_index1 = None
-        #     lowest_score = 0.0
-        #     weight = None
-        #     for index1, end_point_data1 in enumerate(sorted_end_point_data1):
-        #         node_id1, coordinates1, direction1, radius1, annotation1 = end_point_data1
-        #         category1 = annotation1.get_category()
-        #         # inter-segment links are only to the same annotation; links within category will be done separately
-        #         if annotation0 != annotation1:
-        #             continue  # end points are not allowed to join
-        #         direction_score = math.fabs(1.0 + dot(direction0, direction1))
-        #         if direction_score > 0.5:  # arbitrary factor
-        #             continue  # end points are not pointing towards each other
-        #         delta_coordinates = sub(coordinates1, coordinates0)
-        #         mag_delta_coordinates = magnitude(delta_coordinates)
-        #         tdistance = dot(direction0, delta_coordinates)
-        #         ndistance = math.sqrt(mag_delta_coordinates * mag_delta_coordinates - tdistance * tdistance)
-        #         if mag_delta_coordinates > (0.5 * self._max_distance):
-        #              continue  # point is too far away
-        #         distance_score = ((tdistance * tdistance + 100.0 * ndistance * ndistance) /
-        #                           (self._max_distance * self._max_distance))
-        #         tfactor = math.exp(-1000.0 * tdistance / self._max_distance) + 1.0  # arbitrary factor
-        #         penetration_distance_score = ((tfactor * tdistance * tdistance) /
-        #                                       (self._max_distance * self._max_distance))
-        #         delta_radius = (radius0 - radius1) / self._max_distance  # GRC temporary - use a different scale
-        #         radius_score = delta_radius * delta_radius
-        #         score = radius0 * (10.0 * direction_score + distance_score + radius_score)
-        #         if (best_index1 is None) or (score < lowest_score):
-        #             best_index1 = index1
-        #             weight = 0.5 * (annotation0.get_align_weight() + annotation1.get_align_weight())
-        #             lowest_score = score + penetration_distance_score
-        #     if best_index1 is not None:
-        #         # if category0 != AnnotationCategory.NETWORK_GROUP_1:
-        #         total_score += weight * lowest_score
-        #         node_id1, coordinates1, direction1, radius1, annotation1 = sorted_end_point_data1[best_index1]
-        #         self.add_linked_nodes(annotation1, node_id0, node_id1)
-        #         remaining_radius = math.sqrt(math.fabs(radius0 * radius0 - radius1 * radius1))
-        #         if (radius0 > radius1) and (remaining_radius > remaining_radius_factor * radius0):
-        #             for i in range(1, len(sorted_end_point_data0)):
-        #                 if remaining_radius > sorted_end_point_data0[i][3]:
-        #                     break
-        #             # sorted_end_point_data0.insert(i, (node_id0, coordinates0, direction0, remaining_radius, annotation0))
-        #         elif remaining_radius > (remaining_radius_factor * radius1):
-        #             for i in range(best_index1, len(sorted_end_point_data1)):
-        #                 if remaining_radius > sorted_end_point_data1[i][3]:
-        #                     break
-        #             # sorted_end_point_data1.insert(i, (node_id1, coordinates1, direction1, remaining_radius, annotation1))
-        #         sorted_end_point_data1.pop(best_index1)
-        #     else:
-        #         total_score += radius0 * 20.0  # arbitrary factor
-        #     sorted_end_point_data0.pop(0)
 
         if build_link_objects:
             self._build_link_objects()
@@ -736,6 +680,51 @@ class Connection:
                             node_identifier += 1
                     element = mesh_group.createElement(element_identifier, elementtemplate)
                     element.setNodesByIdentifier(eft, cnode_ids)
+                    element_identifier += 1
+
+    def set_link_locking_from_selection(self, lock: bool):
+        """
+        Lock or unlock links for nodes matching any selected visualization elements.
+        :param lock: True to lock, False to unlock.
+        """
+        root_scene = self._region.getRoot().getScene()
+        root_selection_group = root_scene.getSelectionField().castGroup()
+        if not root_selection_group.isValid():
+            return
+        fieldmodule = self._region.getFieldmodule()
+        mesh1d = fieldmodule.findMeshByDimension(1)
+        selection_mesh_group = root_selection_group.getMeshGroup(mesh1d)
+        if not selection_mesh_group.isValid():
+            return
+        element_identifier = 1
+        for annotation_name, links in self._annotation_links.items():
+            for link in links:
+                link_selected = selection_mesh_group.findElementByIdentifier(element_identifier).isValid()
+                if link_selected:
+                    link['lock'] = lock
+                element_identifier += 1
+
+    def add_locked_links_to_selection(self):
+        """
+        Add locked links to the scene selection.
+        """
+        root_region = self._region.getRoot()
+        root_scene = root_region.getScene()
+        fieldmodule = self._region.getFieldmodule()
+        mesh1d = fieldmodule.findMeshByDimension(1)
+        # create selection on demand if any links have a lock
+        root_selection_group = None
+        selection_mesh_group = None
+        element_identifier = 1
+        with ChangeManager(root_scene), HierarchicalChangeManager(root_region):
+            for annotation_name, links in self._annotation_links.items():
+                for link in links:
+                    if link['lock']:
+                        if not selection_mesh_group:
+                            root_selection_group = scene_get_or_create_selection_group(root_scene)
+                            selection_mesh_group = root_selection_group.getOrCreateMeshGroup(mesh1d)
+                        link_element = mesh1d.findElementByIdentifier(element_identifier)
+                        selection_mesh_group.addElement(link_element)
                     element_identifier += 1
 
     def update_annotation_category_groups(self, annotations):
