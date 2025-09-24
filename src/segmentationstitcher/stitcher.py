@@ -10,6 +10,7 @@ from cmlibs.zinc.context import Context
 from cmlibs.zinc.element import Element, Elementbasis
 from cmlibs.zinc.field import Field
 from cmlibs.zinc.node import Node
+from cmlibs.zinc.result import RESULT_OK
 from segmentationstitcher.connection import Connection
 from segmentationstitcher.segment import Segment
 from segmentationstitcher.annotation import AnnotationCategory, region_get_annotations
@@ -358,6 +359,7 @@ class Stitcher:
             segment_node_maps = [{} for segment in self._segments]  # maps from segment node id to output node id
 
             # stitch segments in order of connections, followed by unconnected segments
+            default_radius = self._max_distance * 0.01
             for connection in self._connections:
                 segment_node_map_pair = [segment_node_maps[self._segments.index(segment)]
                                          for segment in connection.get_segments()]
@@ -367,7 +369,7 @@ class Stitcher:
                         node_identifier, datapoint_identifier = _output_segment_nodes_and_markers(
                             segment, segment_node_map, annotation_groups,
                             fieldmodule, fieldcache, coordinates, radius, rgb, marker_name, marker_datapoint_group,
-                            nodetemplate, marker_nodetemplate, node_identifier, datapoint_identifier)
+                            nodetemplate, marker_nodetemplate, default_radius, node_identifier, datapoint_identifier)
                         output_segment_elements = True
                         processed_segments.append(segment)
                     if segment is connection.get_segments()[1]:
@@ -386,7 +388,7 @@ class Stitcher:
                     node_identifier, datapoint_identifier = _output_segment_nodes_and_markers(
                         segment, segment_node_map, annotation_groups,
                         fieldmodule, fieldcache, coordinates, radius, rgb, marker_name, marker_datapoint_group,
-                        nodetemplate, marker_nodetemplate, node_identifier, datapoint_identifier)
+                        nodetemplate, marker_nodetemplate, default_radius, node_identifier, datapoint_identifier)
                     element_identifier = _output_segment_elements(
                         segment, segment_node_map, annotation_groups,
                         fieldmodule, fieldcache, coordinates,
@@ -401,7 +403,21 @@ class Stitcher:
 def _output_segment_nodes_and_markers(
         segment, segment_node_map, annotation_groups,
         fieldmodule, fieldcache, coordinates, radius, rgb, marker_name, marker_datapoint_group,
-        nodetemplate, marker_nodetemplate, node_identifier, datapoint_identifier):
+        nodetemplate, marker_nodetemplate, default_radius, node_identifier, datapoint_identifier):
+    """
+    :param segment: The segment to output.
+    :param segment_node_map: maps from segment node id to output node id
+    :param annotation_groups: map from annotation name to list of Zinc groups (2nd is term group)
+    :param fieldmodule: Fieldmodule for output region.
+    :param fieldcache: Fieldcache for output region.
+    :param coordinates: Coordinates field.
+    :param radius: Radius field.
+    :param rgb: Optional rgb field.
+    :param default_radius: Radius value to use if not define on nodes or datapoints.
+    :param node_identifier: starting node identfier.
+    :param datapoint_identifier: starting datapoint identifier.
+    :return: Next node_identifier, next datapoint_identifier
+    """
     raw_region = segment.get_raw_region()
     raw_fieldmodule = raw_region.getFieldmodule()
     raw_coordinates = raw_fieldmodule.findFieldByName("coordinates").castFiniteElement()
@@ -444,9 +460,13 @@ def _output_segment_nodes_and_markers(
                     x = add(matrix_vector_mult(rotation_matrix, raw_x), translation)
                     coordinates.setNodeParameters(fieldcache, -1, Node.VALUE_LABEL_VALUE, 1, x)
                     result, r = raw_radius.evaluateReal(raw_fieldcache, 1)
+                    if result != RESULT_OK:
+                        r = default_radius
                     radius.setNodeParameters(fieldcache, -1, Node.VALUE_LABEL_VALUE, 1, r)
                     if rgb:
                         result, rgb_value = raw_rgb.evaluateReal(raw_fieldcache, 3)
+                        if result != RESULT_OK:
+                            rgb_value = [1.0, 1.0, 1.0]
                         rgb.setNodeParameters(fieldcache, -1, Node.VALUE_LABEL_VALUE, 1, rgb_value)
                     segment_node_map[raw_node_identifier] = node_identifier
                     segment_node_group.addNode(node)
@@ -465,9 +485,13 @@ def _output_segment_nodes_and_markers(
         x = add(matrix_vector_mult(rotation_matrix, raw_x), translation)
         coordinates.setNodeParameters(fieldcache, -1, Node.VALUE_LABEL_VALUE, 1, x)
         result, r = raw_radius.evaluateReal(raw_fieldcache, 1)
+        if result != RESULT_OK:
+            r = default_radius
         radius.setNodeParameters(fieldcache, -1, Node.VALUE_LABEL_VALUE, 1, r)
         if rgb:
             result, rgb_value = raw_rgb.evaluateReal(raw_fieldcache, 3)
+            if result != RESULT_OK:
+                rgb_value = [1.0, 1.0, 1.0]
             rgb.setNodeParameters(fieldcache, -1, Node.VALUE_LABEL_VALUE, 1, rgb_value)
         name = raw_marker_name.evaluateString(raw_fieldcache)
         marker_name.assignString(fieldcache, name)
