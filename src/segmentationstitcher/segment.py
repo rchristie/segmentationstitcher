@@ -2,8 +2,9 @@
 A segment of the segmentation data, generally from a separate image block.
 """
 from cmlibs.maths.vectorops import (
-    add, cross, dot, euler_to_rotation_matrix, magnitude, matrix_mult, matrix_vector_mult, mult, normalize,
-    set_magnitude, sub)
+    add, axis_angle_to_rotation_matrix, cross, dot, euler_to_rotation_matrix, magnitude, matrix_mult,
+    matrix_vector_mult, mult, normalize, rotation_matrix_to_euler, set_magnitude, sub)
+
 from cmlibs.utils.zinc.field import (
     get_group_list, find_or_create_field_coordinates, find_or_create_field_finite_element, find_or_create_field_group,
     find_or_create_field_stored_string)
@@ -14,6 +15,7 @@ from cmlibs.zinc.field import Field
 from cmlibs.zinc.node import Node
 from cmlibs.zinc.result import RESULT_OK
 from segmentationstitcher.annotation import AnnotationCategory
+import copy
 import json
 import logging
 import math
@@ -92,7 +94,7 @@ class Segment:
         # update current settings to gain new ones and override old ones
         settings = self.encode_settings()
         settings.update(settings_in)
-        self._rotation = settings["rotation"]
+        self._rotation = [math.radians(deg) for deg in settings["rotation"]]
         self._translation = settings["translation"]
 
     def encode_settings(self) -> dict:
@@ -102,7 +104,7 @@ class Segment:
         """
         settings = {
             "name": self._name,
-            "rotation": self._rotation,
+            "rotation": [math.degrees(rad) for rad in self._rotation],
             "translation": self._translation
         }
         return settings
@@ -490,7 +492,7 @@ class Segment:
         :param position Coordinates x, y, z in the segment.
         :return: Transformed position.
         """
-        rotation_matrix = euler_to_rotation_matrix([math.radians(deg) for deg in self._rotation])
+        rotation_matrix = euler_to_rotation_matrix(self._rotation)
         return add(matrix_vector_mult(rotation_matrix, position), self._translation)
 
     def get_raw_region(self):
@@ -522,17 +524,48 @@ class Segment:
         for transformation_change_callback in self._transformation_change_callbacks:
             transformation_change_callback(self)
 
-    def get_rotation(self):
+    def get_rotation_radians(self):
         return self._rotation
 
-    def set_rotation(self, rotation, notify=True):
+    def set_rotation_radians(self, rotation, notify=True):
+        """
+        Set segment rotation, which applies before translation.
+        :param rotation: Rotation as list of 3 Euler angles in radians.
+        :param notify: Set to False to avoid notification to clients if setting translation afterwards.
+        """
+        assert len(rotation) == 3
+        self._rotation = copy.copy(rotation)
+        if notify:
+            self._transformation_change()
+
+    def get_rotation_degrees(self):
+        return [math.degrees(rad) for rad in self._rotation]
+
+    def set_rotation_degrees(self, rotation, notify=True):
         """
         Set segment rotation, which applies before translation.
         :param rotation: Rotation as list of 3 Euler angles in degrees.
         :param notify: Set to False to avoid notification to clients if setting translation afterwards.
         """
-        assert len(rotation) == 3
-        self._rotation = rotation
+        self.set_rotation_radians([math.radians(deg) for deg in rotation], notify)
+
+    def rotate_about_point_axis(self, centre, axis, angle_radians, notify=True):
+        """
+        Update rotation and translation parameters to include a subsequent rotation about a centre.
+        :param centre: Centre of subsequent rotation (after initial rotation and translation applied).
+        :param axis: Axis of subsequent rotation (after initial rotation and translation applied).
+        :param angle_radians: Rotation in radians in a right hand sense about axis.
+        :param notify: Set to False to avoid notification to clients if setting rotation afterwards.
+        """
+        mat1 = euler_to_rotation_matrix(self._rotation)
+        centre_translation1 = matrix_vector_mult(mat1, centre)
+        mat2 = axis_angle_to_rotation_matrix(axis, angle_radians)
+        product_mat = matrix_mult(mat2, mat1)
+        centre_translation2 = matrix_vector_mult(product_mat, centre)
+        self._rotation = rotation_matrix_to_euler(product_mat)
+        # correct translation of centre by new rotation:
+        centre_offset = sub(centre_translation1, centre_translation2)
+        self._translation = add(self._translation, centre_offset)
         if notify:
             self._transformation_change()
 
@@ -546,7 +579,18 @@ class Segment:
         :param notify: Set to False to avoid notification to clients if setting rotation afterwards.
         """
         assert len(translation) == 3
-        self._translation = translation
+        self._translation = copy.copy(translation)
+        if notify:
+            self._transformation_change()
+
+    def translate(self, offset, notify=True):
+        """
+        :param offset: 3 value to add to translation
+        :param notify: Set to False to avoid notification to clients if setting rotation afterwards.
+        """
+        assert len(offset) == 3
+        for c in range(3):
+            self._translation[c] += offset[c]
         if notify:
             self._transformation_change()
 

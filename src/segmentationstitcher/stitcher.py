@@ -425,8 +425,7 @@ def _output_segment_nodes_and_markers(
     raw_rgb = raw_fieldmodule.findFieldByName("rgb").castFiniteElement() if rgb else None
     raw_marker_name = raw_fieldmodule.findFieldByName("marker_name").castStoredString()
     raw_nodes = raw_fieldmodule.findNodesetByFieldDomainType(Field.DOMAIN_TYPE_NODES)
-    rotation = [math.radians(angle_degrees) for angle_degrees in segment.get_rotation()]
-    rotation_matrix = euler_to_rotation_matrix(rotation)
+    rotation_matrix = euler_to_rotation_matrix(segment.get_rotation_radians())
     translation = segment.get_translation()
     raw_groups = get_group_list(raw_fieldmodule)
     raw_nodeset_groups = []
