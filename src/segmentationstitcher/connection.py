@@ -175,8 +175,10 @@ class Connection:
         self.build_links()
         self.update_annotation_category_groups(self._annotations)
 
-    def add_linked_nodes(self, annotation, node_id0, node_id1, lock=False):
+    def set_linked_nodes(self, annotation, node_id0, node_id1, lock=False):
         """
+        Ensure there is a link between node_id0 and node_id1 for annotation with the chosen lock state.
+        If link already exists, updates the lock state only.
         :param annotation: Annotation to use for link.
         :param node_id0: Node identifier to link from segment[0].
         :param node_id1: Node identifier to link from segment[1].
@@ -191,7 +193,12 @@ class Connection:
             for name in list(self._annotation_links.keys()):
                 if name > annotation_name:
                     self._annotation_links[name] = self._annotation_links.pop(name)
-        links.append({'lock': lock, 'node identifiers': [node_id0, node_id1]})
+        node_identifiers = [node_id0, node_id1]
+        for link in links:
+            if link['node identifiers'] == node_identifiers:
+                link['lock'] = lock
+                return
+        links.append({'lock': lock, 'node identifiers': node_identifiers})
 
     def get_annotation_links(self):
         """
@@ -552,7 +559,7 @@ class Connection:
                 annotation = end_point_data0[4]
                 end_point_data1 = sorted_end_point_data1[best_indexes[1]]
                 node_id1 = end_point_data1[0]
-                self.add_linked_nodes(annotation, node_id0, node_id1, lock)
+                self.set_linked_nodes(annotation, node_id0, node_id1, lock)
                 # print("Link nodes", node_id0, node_id1, "score", best_score, "area", best_area, end_point_data0[-1].get_name())
                 end_point_data0[3] -= best_area
                 end_point_data1[3] -= best_area
@@ -633,6 +640,24 @@ class Connection:
                     element = mesh_group.createElement(element_identifier, elementtemplate)
                     element.setNodesByIdentifier(eft, cnode_ids)
                     element_identifier += 1
+
+    def link_and_lock_selected_ends(self):
+        """
+        Create and lock links between all permutations of selected end points in selected elements of each segment.
+        """
+        end_node_identifiers0, end_annotations0 = self._segments[0].get_selected_end_points()
+        end_node_identifiers1, end_annotations1 = self._segments[1].get_selected_end_points()
+        new_links_count = 0
+        for node_id0, annotation0 in zip(end_node_identifiers0, end_annotations0):
+            for node_id1, annotation1 in zip(end_node_identifiers1, end_annotations1):
+                if annotation0 == annotation1:
+                    self.set_linked_nodes(annotation0, node_id0, node_id1, lock=True)
+                    new_links_count += 1
+        if new_links_count:
+            self.build_links()
+            self.update_annotation_category_groups(self._annotations)
+        else:
+            logger.warning('Connection ' + self._name + '. Link and lock selected ends. No valid links exist')
 
     def set_link_locking_from_selection(self, lock: bool):
         """

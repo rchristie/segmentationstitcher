@@ -694,6 +694,32 @@ class Segment:
                         break
                 working_node = working_nodeiterator.next()
 
+    def get_selected_end_points(self):
+        """
+        Get end points in selected elements in segment.
+        :return: List of node identifiers, list of annotations for each.
+        """
+        root_scene = self._base_region.getRoot().getScene()
+        root_selection_group = root_scene.getSelectionField().castGroup()
+        if not root_selection_group.isValid():
+            return [], []
+        fieldmodule = self._raw_region.getFieldmodule()
+        mesh1d = fieldmodule.findMeshByDimension(1)
+        selection_mesh_group = root_selection_group.getMeshGroup(mesh1d)
+        if not selection_mesh_group.isValid():
+            return [], []
+        node_ids = []
+        annotations = []
+        for node_id in self._end_node_ids:
+            element_id = self._node_element_ids[node_id][0]
+            element = selection_mesh_group.findElementByIdentifier(element_id)
+            if element.isValid():
+                node_ids.append(node_id)
+                annotation = self._end_point_data[node_id][3]
+                annotations.append(annotation)
+        return node_ids, annotations
+
+
 def fit_line(path_coordinates, path_radii, x1=None, x2=None, filter_proportion=0.0):
     """
     Compute best fit line to path coordinates, and mean radius of unfiltered points.
