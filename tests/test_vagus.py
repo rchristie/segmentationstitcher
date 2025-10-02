@@ -154,9 +154,9 @@ class StitchVagusTestCase(unittest.TestCase):
         expected_annotation_links12 = {
             "Fascicle": [
                 {'lock': False,
-                 'node identifiers': [38, 25]},
+                 'node identifiers': [22, 15]},
                 {'lock': False,
-                 'node identifiers': [22, 15]}],
+                 'node identifiers': [38, 25]}],
             "left vagus X nerve trunk": [
                 {'lock': False,
                  'node identifiers': [11, 1]}]}
@@ -205,6 +205,32 @@ class StitchVagusTestCase(unittest.TestCase):
         self.assertTrue(marker.isValid())
         marker_datapoint_group = marker.getNodesetGroup(datapoints)
         self.assertEqual(marker_datapoint_group.getSize(), 5)
+
+        # try auto-align with gap in 2 stages
+
+        segments[0].set_rotation_degrees([0.0, 0.0, 0.0])
+        segments[0].set_translation([0.0, 0.0, 0.0])
+        segments[1].set_rotation_degrees([0.0, -10.0, -60.0])
+        segments[1].set_translation([5.0, 0.0, 0.0])
+        segments[2].set_rotation_degrees([0.0, 0.0, 40.0])
+        segments[2].set_translation([10.0, 0.0, 0.5])
+
+        connection12.auto_align_segment(1, phase1_align=True, gap_distance=0.1, phase_2_optimize=False)
+        rotation = segments[2].get_rotation_degrees()
+        translation = segments[2].get_translation()
+        assertAlmostEqualList(self, [2.7968079813220417, -7.433708312768542, 39.583915044651825], rotation, delta=TOL)
+        assertAlmostEqualList(self, [9.734631815723224, -0.028181186581394506, 0.505539399215602], translation, delta=TOL)
+        annotation_links12 = connection12.get_annotation_links()
+        self.assertEqual(expected_annotation_links12, annotation_links12)
+
+        connection12.auto_align_segment(1, phase1_align=False, gap_distance=0.1, phase_2_optimize=True)
+        rotation = segments[2].get_rotation_degrees()
+        translation = segments[2].get_translation()
+        assertAlmostEqualList(self, [1.1774294709982658, -7.223345962981031, -3.1504154683525827], rotation, delta=TOL)
+        assertAlmostEqualList(self, [9.735859443921962, -0.003902802918894957, 0.4936970140282092], translation, delta=TOL)
+        annotation_links12 = connection12.get_annotation_links()
+        self.assertEqual(expected_annotation_links12, annotation_links12)
+
 
 if __name__ == "__main__":
     unittest.main()

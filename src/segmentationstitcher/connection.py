@@ -194,11 +194,17 @@ class Connection:
                 if name > annotation_name:
                     self._annotation_links[name] = self._annotation_links.pop(name)
         node_identifiers = [node_id0, node_id1]
-        for link in links:
+        for index, link in enumerate(links):
+            if link['node identifiers'] < node_identifiers:
+                continue
             if link['node identifiers'] == node_identifiers:
                 link['lock'] = lock
                 return
-        links.append({'lock': lock, 'node identifiers': node_identifiers})
+            break
+        else:
+            index = len(links)
+        # insert in order of lowest first then second node identifier
+        links.insert(index, {'lock': lock, 'node identifiers': node_identifiers})
 
     def get_annotation_links(self):
         """
@@ -224,13 +230,19 @@ class Connection:
         nodes = self._region.getFieldmodule().findNodesetByFieldDomainType(Field.DOMAIN_TYPE_NODES)
         return evaluate_field_nodeset_range(self._coordinates, nodes)
 
-    def auto_align_segment(self, dependent_segment_index, minimum_gap=0.0):
+    def auto_align_segment(self, dependent_segment_index, phase1_align=True, gap_distance=0.0, phase_2_optimize=True):
         """
         Optimise transformation of one connected segment relative to the other, by getting best fit
         alignment and connection between nearest end points between them.
         :param dependent_segment_index: Index of segment to optimise transformation of.
-        :param minimum_gap: Minimum gap between aligned segments.
+        :param phase1_align: True if performing phase 1 align ends.
+        :param gap_distance: Gap distance to apply in phase 1. Can be negative to overlap.
+        :param phase_2_optimize: True if performing phase 2 optimize transformation in plane.
         """
+        max_gap_distance = 0.5 * self._max_distance
+        if math.fabs(gap_distance) > max_gap_distance:
+            logger.warning("Auto align gap distance is too large, limiting to " + str(max_gap_distance))
+            gap_distance = math.copysign(max_gap_distance, gap_distance)
         segments_count = len(self._segments)
         if (dependent_segment_index < 0) or (dependent_segment_index >= segments_count):
             logger.error("auto_align_segment.  Segment index " + str(dependent_segment_index) + " out of range")
@@ -239,6 +251,7 @@ class Connection:
             logger.error("auto_align_segment.  Not implemented for " + str(segments_count) + " segments")
             return
         fixed_segment_index = 1 if (dependent_segment_index == 0) else 0
+        dependent_segment = self._segments[dependent_segment_index]
 
         fixed_transformed_end_location = None
         fixed_transformed_end_direction = None
@@ -267,7 +280,7 @@ class Connection:
             mean_end_locations = []
             mean_end_directions = []  # unit mean untransformed directions
             # distance above which distance weighting is zero
-            far_distance = self._max_distance + minimum_gap
+            far_distance = self._max_distance + gap_distance
             for s, segment in enumerate(self._segments):
                 distances = []  # min transformed distance from end points of this segment to linkable end points in other
                 max_distance = None
@@ -315,12 +328,16 @@ class Connection:
                     projection = dot(coordinates, mean_end_direction)
                     if projection > max_projection:
                         max_projection = projection
-                # add half minimum gap to each side
-                offset = max_projection - mean_projection + 0.5 * minimum_gap
+                offset = max_projection - mean_projection
+                # add gap_distance to fixed side
+                if s == fixed_segment_index:
+                    offset += gap_distance
                 mean_end_locations.append(add(mean_coordinates, mult(mean_end_direction, offset)))
 
+            if not phase1_align:
+                break  # not transforming here and no need for multiple iterations
+
             # get angle axis transformation of dependent direction onto fixed direction
-            dependent_segment = self._segments[dependent_segment_index]
             rotated_mean_end_directions = [
                 matrix_vector_mult(initial_rotation_matrix[s], mean_end_directions[s]) for s in range(2)]
             fixed_transformed_end_direction = rotated_mean_end_directions[fixed_segment_index]
@@ -344,14 +361,18 @@ class Connection:
             translation = sub(fixed_transformed_end_location, dependent_rotated_end_location)
             dependent_segment.set_translation(translation, notify=False)
 
-        # first stage only
-        # dependent_segment.set_translation(translation)  # force notification
-        # return
+        if not phase_2_optimize:
+            if phase1_align:
+                dependent_segment.set_translation(translation)  # force notification
+            return
 
         # optimise rotation and translation in plane
 
-        centre = fixed_transformed_end_location
-        axis3 = fixed_transformed_end_direction
+        translation = dependent_segment.get_translation()
+        rotation_matrix = euler_to_rotation_matrix(dependent_segment.get_rotation_radians())
+        centre = add(matrix_vector_mult(rotation_matrix, mean_end_locations[dependent_segment_index]), translation)
+        axis3 = [-c for c in matrix_vector_mult(rotation_matrix, mean_end_directions[dependent_segment_index])]
+
         # get 2 orthogonal axes for translations, scaled by max_distance so parameter scale similar to rotation radians:
         axis1 = cross([1.0, 0.0, 0.0], axis3)
         if magnitude(axis1) < 0.1:
@@ -374,10 +395,11 @@ class Connection:
             return score
 
         initial_rotation_translation = [0.0, 0.0, 0.0]
+        # 0.75 ~ 43 degrees
         res = minimize(links_objective, initial_rotation_translation,
                        args=(),
                        method='Nelder-Mead',  # method='Powell',
-                       bounds=[(-0.5, 0.5), (-0.5, 0.5), (-0.5, 0.5)])  # , tol=TOL)
+                       bounds=[(-0.75, 0.75), (-0.75, 0.75), (-0.75, 0.75)])  # , tol=TOL)
         if res.success:
             links_objective(res.x)  # to ensure the last values are converted to rotation and translation
             # this will invoke build_links and build_link_objects:
@@ -675,10 +697,17 @@ class Connection:
             return
         element_identifier = 1
         for annotation_name, links in self._annotation_links.items():
+            for annotation in self._annotations:
+                if annotation.get_name() == annotation_name:
+                    break
+            else:
+                logger.error('Segmentation stitcher connect ' + self._name +
+                             ': No annotation of name ' + annotation_name)
+                continue
             for link in links:
                 link_selected = selection_mesh_group.findElementByIdentifier(element_identifier).isValid()
-                if link_selected:
-                    link['lock'] = lock
+                node_id0, node_id1 = link['node_identifiers']
+                self.set_linked_nodes(annotation, node_id0, node_id1, lock=True)
                 element_identifier += 1
 
     def add_locked_links_to_selection(self):
