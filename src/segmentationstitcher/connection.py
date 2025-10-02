@@ -697,17 +697,10 @@ class Connection:
             return
         element_identifier = 1
         for annotation_name, links in self._annotation_links.items():
-            for annotation in self._annotations:
-                if annotation.get_name() == annotation_name:
-                    break
-            else:
-                logger.error('Segmentation stitcher connect ' + self._name +
-                             ': No annotation of name ' + annotation_name)
-                continue
             for link in links:
                 link_selected = selection_mesh_group.findElementByIdentifier(element_identifier).isValid()
-                node_id0, node_id1 = link['node_identifiers']
-                self.set_linked_nodes(annotation, node_id0, node_id1, lock=True)
+                if link_selected:
+                    link['lock'] = lock
                 element_identifier += 1
 
     def add_locked_links_to_selection(self):
