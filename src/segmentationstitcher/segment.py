@@ -413,10 +413,11 @@ class Segment:
             self._working_radius_direction.setNodeParameters(fieldcache, -1, Node.VALUE_LABEL_VALUE, 1,
                                                              radius_direction)
             direction1 = sub(end_x, start_x)
-            axis = [1.0, 0.0, 0.0]
-            if dot(normalize(direction1), axis) < 0.1:
-                axis = [0.0, 1.0, 0.0]
-            direction2 = set_magnitude(cross(axis, direction1), mean_r)
+            norm_direction1 = normalize(direction1)
+            for side in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]:
+                if math.fabs(dot(norm_direction1, side)) < 0.1:
+                    break
+            direction2 = set_magnitude(cross(side, direction1), mean_r)
             direction3 = set_magnitude(cross(direction1, direction2), mean_r)
             self._working_best_fit_line_orientation.setNodeParameters(fieldcache, -1, Node.VALUE_LABEL_VALUE, 1,
                                                                       direction1 + direction2 + direction3)
