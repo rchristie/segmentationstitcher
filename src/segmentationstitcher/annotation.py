@@ -37,6 +37,9 @@ class AnnotationCategory(Enum):
     def is_connectable(self):
         return self in (self.INDEPENDENT_NETWORK, self.NETWORK_GROUP_1, self.NETWORK_GROUP_2)
 
+    def is_connectable_different_annotation(self):
+        return self.is_connectable() and not (self == self.INDEPENDENT_NETWORK)
+
 
 class Annotation:
     """
@@ -134,6 +137,19 @@ class Annotation:
         """
         assert self._term is None
         self._term = term
+
+    def is_connectable_with(self, other_annotation):
+        """
+        Query whether ends annotated with self and other_annotation can be connected.
+        :param other_annotation: Annotation Annotation object.
+        :return: True if self and other_annotation are allowed to be connected by a link.
+        """
+        if self._category.is_connectable() and (self._category == other_annotation.get_category()):
+            if other_annotation is self:
+                return True
+            elif self._category.is_connectable_different_annotation():
+                return True
+        return False
 
 
 def region_get_annotations(region, network_group1_keywords, network_group2_keywords, term_keywords):

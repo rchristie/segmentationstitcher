@@ -472,10 +472,10 @@ class Connection:
             base_scores1 = []
             for index1, end_point_data1 in enumerate(sorted_end_point_data1):
                 node_id1, coordinates1, direction1, area1, annotation1 = end_point_data1
-                # presently only allow links between same annotation even within network group
-                if annotation0 != annotation1:
+                if not annotation0.is_connectable_with(annotation1):
+                    # use worst score for end points which cannot connect
                     base_scores1.append(worst_base_score)
-                    continue  # end points have different annotation
+                    continue
                 dot_directions = dot(direction0, direction1)  # -1.0 if perfectly pointing at each other
                 # if dot_directions > 0.2:  # arbitrary factor
                 #     base_scores1.append(worst_base_score)
@@ -578,9 +578,10 @@ class Connection:
             if best_score is not None:
                 end_point_data0 = sorted_end_point_data0[best_indexes[0]]
                 node_id0 = end_point_data0[0]
-                annotation = end_point_data0[4]
                 end_point_data1 = sorted_end_point_data1[best_indexes[1]]
                 node_id1 = end_point_data1[0]
+                # use annotation1 as it may be a branch which should logically own the link
+                annotation = end_point_data1[4]
                 self.set_linked_nodes(annotation, node_id0, node_id1, lock)
                 # print("Link nodes", node_id0, node_id1, "score", best_score, "area", best_area, end_point_data0[-1].get_name())
                 end_point_data0[3] -= best_area
@@ -672,8 +673,9 @@ class Connection:
         new_links_count = 0
         for node_id0, annotation0 in zip(end_node_identifiers0, end_annotations0):
             for node_id1, annotation1 in zip(end_node_identifiers1, end_annotations1):
-                if annotation0 == annotation1:
-                    self.set_linked_nodes(annotation0, node_id0, node_id1, lock=True)
+                if annotation0.is_connectable_with(annotation1):
+                    # use annotation1 as it may be a branch which should logically own the link
+                    self.set_linked_nodes(annotation1, node_id0, node_id1, lock=True)
                     new_links_count += 1
         if new_links_count:
             self.build_links()
