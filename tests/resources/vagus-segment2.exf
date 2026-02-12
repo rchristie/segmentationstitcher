@@ -381,6 +381,11 @@ Node: 74
   3.870986066902640e-02
  -5.955710515963688e-01
   1.000000000000000e-02
+Node: 75
+  4.349351322583406e+00
+ -1.214784316068148e-00
+ -2.929821893185177e-01
+  3.000000000000000e-01
 !#nodeset datapoints
 Define node template: node2
 Shape. Dimension=0
@@ -394,7 +399,7 @@ Shape. Dimension=0
 3) radius, field, rectangular cartesian, real, #Components=1
  1. #Values=1 (value)
 Node template: node2
-Node: 75
+Node: 76
   2.398918879869167e+00
  -1.432597145502751e-01
   2.241355737421549e-01
@@ -646,6 +651,9 @@ Element: 70
 Element: 71
  Nodes:
  74 63
+Element: 72
+ Nodes:
+ 11 75
 Group name: 00001
 !#nodeset nodes
 Node group:
@@ -702,6 +710,13 @@ Node group:
 !#mesh mesh1d, dimension=1, nodeset=nodes
 Element group:
 11..35
+Group name: left A branch END
+!#nodeset nodes
+Node group:
+11,75
+!#mesh mesh1d, dimension=1, nodeset=nodes
+Element group:
+72
 Group name: left vagus X nerve trunk
 !#nodeset nodes
 Node group:
@@ -712,4 +727,4 @@ Element group:
 Group name: marker
 !#nodeset datapoints
 Node group:
-75
+76

@@ -35,7 +35,7 @@ class StitchVagusTestCase(unittest.TestCase):
         assertAlmostEqualList(self, zero, segment12.get_translation(), delta=TOL)
         segment12.set_translation(new_translation)
         annotations1 = stitcher1.get_annotations()
-        self.assertEqual(7, len(annotations1))
+        self.assertEqual(8, len(annotations1))
         self.assertEqual("1.0.0", stitcher1.get_version())
         annotation11 = annotations1[0]
         self.assertEqual("Epineurium", annotation11.get_name())
@@ -46,10 +46,14 @@ class StitchVagusTestCase(unittest.TestCase):
         self.assertEqual("http://uri.interlex.org/base/ilx_0738426", annotation12.get_term())
         self.assertEqual(AnnotationCategory.NETWORK_GROUP_2, annotation12.get_category())
         annotation15 = annotations1[4]
-        self.assertEqual("left vagus X nerve trunk", annotation15.get_name())
-        self.assertEqual('http://purl.obolibrary.org/obo/UBERON_0035020', annotation15.get_term())
+        self.assertEqual("left A branch END", annotation15.get_name())
+        self.assertIsNone(annotation15.get_term())
         self.assertEqual(AnnotationCategory.NETWORK_GROUP_1, annotation15.get_category())
-        annotation17 = annotations1[6]
+        annotation16 = annotations1[5]
+        self.assertEqual("left vagus X nerve trunk", annotation16.get_name())
+        self.assertEqual('http://purl.obolibrary.org/obo/UBERON_0035020', annotation16.get_term())
+        self.assertEqual(AnnotationCategory.NETWORK_GROUP_1, annotation16.get_category())
+        annotation17 = annotations1[7]
         self.assertEqual("unknown", annotation17.get_name())
         self.assertEqual(AnnotationCategory.EXCLUDE, annotation17.get_category())
 
@@ -80,10 +84,10 @@ class StitchVagusTestCase(unittest.TestCase):
 
         settings = stitcher1.encode_settings()
         self.assertEqual(3, len(settings["segments"]))
-        self.assertEqual(7, len(settings["annotations"]))
+        self.assertEqual(8, len(settings["annotations"]))
         self.assertEqual("1.0.0", settings["version"])
         assertAlmostEqualList(self, new_translation, settings["segments"][1]["translation"], delta=TOL)
-        self.assertEqual(AnnotationCategory.INDEPENDENT_NETWORK.name, settings["annotations"][6]["category"])
+        self.assertEqual(AnnotationCategory.INDEPENDENT_NETWORK.name, settings["annotations"][7]["category"])
 
         stitcher2 = Stitcher(segmentation_file_names, network_group1_keywords, network_group2_keywords)
         stitcher2.decode_settings(settings)
@@ -91,8 +95,8 @@ class StitchVagusTestCase(unittest.TestCase):
         segment22 = segments2[1]
         assertAlmostEqualList(self, new_translation, segment22.get_translation(), delta=TOL)
         annotations2 = stitcher2.get_annotations()
-        annotation27 = annotations2[6]
-        self.assertEqual(AnnotationCategory.INDEPENDENT_NETWORK, annotation27.get_category())
+        annotation28 = annotations2[7]
+        self.assertEqual(AnnotationCategory.INDEPENDENT_NETWORK, annotation28.get_category())
 
     def test_align_stitch_vagus1(self):
         """
@@ -191,7 +195,7 @@ class StitchVagusTestCase(unittest.TestCase):
         mesh = fieldmodule.findMeshByDimension(1)
         minimums, maximums = evaluate_field_nodeset_range(coordinates, nodes)
         assertAlmostEqualList(self, [0.04678894233410661, -1.3448619475857166, -0.5849221355942552], minimums, delta=TOL)
-        assertAlmostEqualList(self, [13.528908286654149, 1.12292211593189, 1.0461133166576715], maximums, delta=TOL)
+        assertAlmostEqualList(self, [13.528908286654149, 1.12292211593189, 1.4370793304399627], maximums, delta=TOL)
 
         fascicle = fieldmodule.findFieldByName("Fascicle").castGroup()
         self.assertTrue(fascicle.isValid())

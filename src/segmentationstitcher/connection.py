@@ -173,7 +173,7 @@ class Connection:
 
     def _segment_transformation_change(self, segment):
         self.build_links()
-        self.update_annotation_category_groups(self._annotations)
+        self.update_annotation_category_groups()
 
     def set_linked_nodes(self, annotation, node_id0, node_id1, lock=False):
         """
@@ -421,12 +421,12 @@ class Connection:
         total_score = 0.0
 
         # remember locked tuples of linked nodes to re-attach in algorithm below
-        locked_node_identifiers = set()
+        locked_node_identifiers_list = []
         annotation_names = list(self._annotation_links.keys())
         for annotation_name in annotation_names:
             for link in self._annotation_links[annotation_name]:
                 if link['lock']:
-                    locked_node_identifiers.add(tuple(link['node identifiers']))
+                    locked_node_identifiers_list.append(tuple(link['node identifiers']))
         self._annotation_links = {}
 
         # filter, transform and sort end point data from largest to smallest radius
@@ -543,11 +543,11 @@ class Connection:
                     area = min(area0, area1)
                     indexes = (index0, index1)
                     node_identifiers = (node_id0, node_id1)
-                    if node_identifiers in locked_node_identifiers:
+                    if node_identifiers in locked_node_identifiers_list:
                         best_area = max(min_area, area)  # don't want area to get negative
                         best_nonexclusive_score = best_score = base_score / math.sqrt(best_area)
                         best_indexes = indexes
-                        locked_node_identifiers.remove(node_identifiers)
+                        locked_node_identifiers_list.remove(node_identifiers)
                         lock = True
                         break
                     else:
@@ -679,9 +679,37 @@ class Connection:
                     new_links_count += 1
         if new_links_count:
             self.build_links()
-            self.update_annotation_category_groups(self._annotations)
+            self.update_annotation_category_groups()
         else:
             logger.warning('Connection ' + self._name + '. Link and lock selected ends. No valid links exist')
+
+    def remove_selected_links(self):
+        """
+        Unlock and remove links corresponding to selected visualization elements in this connection.
+        This does not prevent links from being automatically re-found after either segment is moved.
+        """
+        root_scene = self._region.getRoot().getScene()
+        root_selection_group = root_scene.getSelectionField().castGroup()
+        if not root_selection_group.isValid():
+            return
+        fieldmodule = self._region.getFieldmodule()
+        mesh1d = fieldmodule.findMeshByDimension(1)
+        selection_mesh_group = root_selection_group.getMeshGroup(mesh1d)
+        if not selection_mesh_group.isValid():
+            return
+        element_identifier = 1
+        for annotation_name, links in self._annotation_links.items():
+            remove_link_indexes = []
+            for link in links:
+                link_selected = selection_mesh_group.findElementByIdentifier(element_identifier).isValid()
+                if link_selected:
+                    remove_link_indexes.insert(0, element_identifier - 1)  # reverse order
+                element_identifier += 1
+            if remove_link_indexes:
+                for remove_link_index in remove_link_indexes:
+                    del links[remove_link_index]
+                self._build_link_objects()
+                self.update_annotation_category_groups()
 
     def set_link_locking_from_selection(self, lock: bool):
         """
@@ -728,10 +756,9 @@ class Connection:
                         selection_mesh_group.addElement(link_element)
                     element_identifier += 1
 
-    def update_annotation_category_groups(self, annotations):
+    def update_annotation_category_groups(self):
         """
         Rebuild all annotation category groups e.g. after loading settings.
-        :param annotations: List of all annotations from stitcher.
         """
         fieldmodule = self._region.getFieldmodule()
         with ChangeManager(fieldmodule):
@@ -739,7 +766,7 @@ class Connection:
             for category in AnnotationCategory:
                 category_group = self.get_category_group(category)
                 category_group.clear()
-            for annotation in annotations:
+            for annotation in self._annotations:
                 annotation_group = self.get_annotation_group(annotation)
                 if annotation_group:
                     category_group = self.get_category_group(annotation.get_category())

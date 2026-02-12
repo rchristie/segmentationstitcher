@@ -13,7 +13,7 @@ from cmlibs.zinc.node import Node
 from cmlibs.zinc.result import RESULT_OK
 from segmentationstitcher.connection import Connection
 from segmentationstitcher.segment import Segment
-from segmentationstitcher.annotation import AnnotationCategory, region_get_annotations
+from segmentationstitcher.annotation import AnnotationCategory
 
 import copy
 import logging
@@ -54,7 +54,7 @@ class Stitcher:
         self._context = Context("Segmentation Stitcher")
         self._root_region = self._context.getDefaultRegion()
         self._stitch_region = self._root_region.createRegion()
-        self._annotations = []
+        self._annotations = []  # note all segments and connections share this common list
         self._term_keywords = ['fma:', 'fma_', 'ilx:', 'ilx_', 'uberon:', 'uberon_']
         self._segments = []
         self._connections = []
@@ -68,7 +68,8 @@ class Stitcher:
             for segmentation_file_name in self._segmentation_file_names:
                 file_path = Path(segmentation_file_name)
                 name = file_path.name
-                segment = Segment(name, segmentation_file_name, self._root_region)
+                segment = Segment(name, segmentation_file_name, self._root_region, self._annotations,
+                                  self._network_group1_keywords, self._network_group2_keywords, self._term_keywords)
                 name_stem = file_path.stem
                 used_endpoints_file_indexes = []
                 for ix, endpoints_file_name_stem in enumerate(unused_endpoints_file_name_stems):
@@ -84,29 +85,6 @@ class Stitcher:
                 else:
                     zero_range_segments_count += 1
                 self._segments.append(segment)
-                segment_annotations = region_get_annotations(
-                    segment.get_raw_region(), self._network_group1_keywords, self._network_group2_keywords,
-                    self._term_keywords)
-                for segment_annotation in segment_annotations:
-                    name = segment_annotation.get_name()
-                    term = segment_annotation.get_term()
-                    index = 0
-                    for annotation in self._annotations:
-                        if annotation.get_name() == name:
-                            existing_term = annotation.get_term()
-                            if term != existing_term:
-                                logger.warning("Segment " + name + ": Found existing annotation with name " + name +
-                                               " but existing term " + str(existing_term) +
-                                               " does not equal new term " + str(term))
-                                if term and (existing_term is None):
-                                    annotation.set_term(term)
-                            break  # exists already
-                        if name > annotation.get_name():
-                            index += 1
-                    else:
-                        # print("Add annotation name", name, "term", term, "dim", segment_annotation.get_dimension(),
-                        #       "category", segment_annotation.get_category())
-                        self._annotations.insert(index, segment_annotation)
             # by default put all GENERAL annotations without terms into the EXCLUDE category, except "marker"
             for annotation in self._annotations:
                 if ((annotation.get_category() == AnnotationCategory.GENERAL) and (not annotation.get_term()) and
@@ -121,8 +99,8 @@ class Stitcher:
                 with HierarchicalChangeManager(self._root_region):
                     self._max_distance = 0.25 * self._mean_segment_length
                     for segment in self._segments:
-                        segment.create_end_point_directions(self._annotations, self._max_distance)
-                        segment.update_annotation_category_groups(self._annotations)
+                        segment.create_end_point_directions(self._max_distance)
+                        segment.update_annotation_category_groups()
             for annotation in self._annotations:
                 annotation.set_category_change_callback(self._annotation_category_change)
         for endpoints_file_name in unused_endpoints_file_names:
@@ -210,9 +188,9 @@ class Stitcher:
 
         with HierarchicalChangeManager(self._root_region):
             for segment in self._segments:
-                segment.update_annotation_category_groups(self._annotations)
+                segment.update_annotation_category_groups()
             for connection in self._connections:
-                connection.update_annotation_category_groups(self._annotations)
+                connection.update_annotation_category_groups()
 
     def encode_settings(self) -> dict:
         """
@@ -239,7 +217,7 @@ class Stitcher:
                 segment.update_annotation_category(annotation, old_category)
             for connection in self._connections:
                 connection.build_links(self._max_distance)
-                connection.update_annotation_category_groups(self._annotations)
+                connection.update_annotation_category_groups()
 
     def get_annotations(self):
         return self._annotations
@@ -265,7 +243,7 @@ class Stitcher:
             connection.decode_settings(connection_settings)
         self._connections.append(connection)
         connection.build_links()
-        connection.update_annotation_category_groups(self._annotations)
+        connection.update_annotation_category_groups()
         return connection
 
     def delete_connection(self, connection):
