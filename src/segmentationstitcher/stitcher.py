@@ -137,7 +137,7 @@ class Stitcher:
                     break
             else:
                 logger.warning("Segmentation Stitcher.  Annotation with name " + name + " term " + str(term) +
-                               "in settings not found; ignoring. Have input files changed?")
+                               " in settings not found; ignoring. Have input files changed?")
         if processed_count != len(self._annotations):
             for annotation in self._annotations:
                 name = annotation.get_name()
@@ -147,29 +147,29 @@ class Stitcher:
                         break
                 else:
                     logger.warning("Segmentation Stitcher.  Annotation with name " + name + " term " + str(term) +
-                                   "not found in settings; using defaults. Have input files changed?")
+                                   " not found in settings; using defaults. Have input files changed?")
 
         # update segment settings and warn about differences
         processed_count = 0
         for segment_settings in settings["segments"]:
-            name = segment_settings["name"]
+            segment_name = segment_settings["name"]
             for segment in self._segments:
-                if segment.get_name() == name:
+                if segment.get_name() == segment_name:
                     segment.decode_settings(segment_settings)
                     processed_count += 1
                     break
             else:
-                print("WARNING: Segmentation Stitcher.  Segment with name", name,
-                      "in settings not found; ignoring. Have input files changed?")
+                logger.warning("Segmentation Stitcher.  Segment with name " + segment_name +
+                               " in settings not found; ignoring. Have input files changed?")
         if processed_count != len(self._segments):
             for segment in self._segments:
-                name = segment.get_name()
+                segment_name = segment.get_name()
                 for segment_settings in settings["segments"]:
-                    if segment_settings["name"] == name:
+                    if segment_settings["name"] == segment_name:
                         break
                 else:
-                    print("WARNING: Segmentation Stitcher.  Segment with name", name,
-                          "not found in settings; using defaults. Have input files changed?")
+                    logger.warning("Segmentation Stitcher.  Segment with name " + segment_name +
+                                   " not found in settings; using defaults. Have input files changed?")
 
         # create connections from stitcher settings' connection serialisations
         assert len(self._connections) == 0, "Cannot decode connections after any exist"
@@ -181,8 +181,8 @@ class Stitcher:
                         connection_segments.append(segment)
                         break
                 else:
-                    print("WARNING: Segmentation Stitcher.  Segment with name", segment_name,
-                          "in connection settings not found; ignoring. Have input files changed?")
+                    logger.warning("Segmentation Stitcher.  Segment with name " + segment_name +
+                                   " in connection settings not found; ignoring. Have input files changed?")
             if len(connection_segments) >= 2:
                 connection = self.create_connection(connection_segments, connection_settings)
 

@@ -100,23 +100,23 @@ class Segment:
         segment_annotations = region_get_annotations(
             self._raw_region, network_group1_keywords, network_group2_keywords, term_keywords)
         for segment_annotation in segment_annotations:
-            name = segment_annotation.get_name()
+            annotation_name = segment_annotation.get_name()
             term = segment_annotation.get_term()
             index = 0
             for annotation in self._annotations:
-                if annotation.get_name() == name:
+                if annotation.get_name() == annotation_name:
                     existing_term = annotation.get_term()
                     if term != existing_term:
-                        logger.warning("Segment " + name + ": Found existing annotation with name " + name +
+                        logger.warning("Segment " + name + ": Found existing annotation with name " + annotation_name +
                                        " but existing term " + str(existing_term) +
                                        " does not equal new term " + str(term))
                         if term and (existing_term is None):
                             annotation.set_term(term)
                     break  # exists already
-                if name > annotation.get_name():
+                if annotation_name > annotation.get_name():
                     index += 1
             else:
-                # print("Add annotation name", name, "term", term, "dim", segment_annotation.get_dimension(),
+                # print("Add annotation name", annotation_name, "term", term, "dim", segment_annotation.get_dimension(),
                 #       "category", segment_annotation.get_category())
                 self._annotations.insert(index, segment_annotation)
 

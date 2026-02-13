@@ -70,7 +70,7 @@ class Annotation:
         settings_dimension = settings_in.get("dimension")
         if settings_dimension != self._dimension:
             logger.warning("Segmentation Stitcher.  Annotation with name " + self._name, " term " + str(self._term) +
-                  "was dimension " + str(settings_dimension), "in settings, is now " + str(self._dimension) +
+                  " was dimension " + str(settings_dimension), "in settings, is now " + str(self._dimension) +
                   ". Have input files changed?")
             settings_in["dimension"] = self._dimension
         # update current settings to gain new ones and override old ones
@@ -196,7 +196,7 @@ def region_get_annotations(region, network_group1_keywords, network_group2_keywo
             continue  # ignore as these can never be valid annotation names
         if '<property name=' in lower_name:
             continue  # don't want these groups output by mbfxml2ex
-        category = AnnotationCategory.GENERAL
+        category = AnnotationCategory.EXCLUDE if ('_' in lower_name) else AnnotationCategory.GENERAL
         for keyword in network_group1_keywords:
             if keyword in lower_name:
                 category = AnnotationCategory.NETWORK_GROUP_1
@@ -209,7 +209,7 @@ def region_get_annotations(region, network_group1_keywords, network_group2_keywo
         term = known_terms.get(name)
         annotation = Annotation(name, term, dimension, category)
         is_term = False
-        if category == AnnotationCategory.GENERAL:
+        if category in (AnnotationCategory.GENERAL, AnnotationCategory.EXCLUDE):
             for keyword in term_keywords:
                 if keyword in lower_name:
                     is_term = True
@@ -219,11 +219,25 @@ def region_get_annotations(region, network_group1_keywords, network_group2_keywo
         else:
             annotations.append(annotation)
 
+    # sort annotations to have networks first, then general, lastly EXCLUDE to associate terms with earlier ones first
+    ordered_categories = (
+        AnnotationCategory.NETWORK_GROUP_1,
+        AnnotationCategory.NETWORK_GROUP_2,
+        AnnotationCategory.INDEPENDENT_NETWORK,
+        AnnotationCategory.GENERAL,
+        AnnotationCategory.EXCLUDE)
+    assert len(ordered_categories) == len(AnnotationCategory)  # in case new categories added, expand the above
+    sorted_annotations = []
+    for category in ordered_categories:
+        for annotation in annotations:
+            if annotation.get_category() == category:
+                sorted_annotations.append(annotation)
+
     for term_annotation in term_annotations:
         term = term_annotation.get_name()
         term_group = fieldmodule.findFieldByName(term).castGroup()
         dimension = term_annotation.get_dimension()
-        for annotation in annotations:
+        for annotation in sorted_annotations:
             if annotation.get_dimension() != dimension:
                 continue
             name = annotation.get_name()
@@ -236,6 +250,8 @@ def region_get_annotations(region, network_group1_keywords, network_group2_keywo
                             "Annotation name " + name + " already has term " + old_term +
                             " but matched group with term " + term + ". Keeping original term.")
                 else:
+                    # logger.info("Segment " + segment_name + ": " + "Annotation name " + name +
+                    #             " discovered term " + term + ".")
                     annotation.set_term(term)
                 break
             else:
