@@ -184,7 +184,7 @@ class Stitcher:
                     logger.warning("Segmentation Stitcher.  Segment with name " + segment_name +
                                    " in connection settings not found; ignoring. Have input files changed?")
             if len(connection_segments) >= 2:
-                connection = self.create_connection(connection_segments, connection_settings)
+                connection = self.create_connection(connection_segments, connection_settings, build_links=False)
 
         with HierarchicalChangeManager(self._root_region):
             for segment in self._segments:
@@ -222,10 +222,12 @@ class Stitcher:
     def get_annotations(self):
         return self._annotations
 
-    def create_connection(self, segments, connection_settings={}):
+    def create_connection(self, segments, connection_settings={}, build_links=True):
         """
         :param segments: List of 2 Stitcher Segment objects to connect.
         :param connection_settings: Optional serialisation of connection to read before building links.
+        :param build_links: If True (default) automatically build any links. If False, called when decoding settings,
+        only the link graphics are made for existing links, which is required to not rebuild removed links.
         :return: Connection object or None if invalid segments or connection between segments already exists
         """
         if len(segments) != 2:
@@ -242,7 +244,10 @@ class Stitcher:
         if connection_settings:
             connection.decode_settings(connection_settings)
         self._connections.append(connection)
-        connection.build_links()
+        if build_links:
+            connection.build_links()
+        else:
+            connection.build_link_objects()
         connection.update_annotation_category_groups()
         return connection
 

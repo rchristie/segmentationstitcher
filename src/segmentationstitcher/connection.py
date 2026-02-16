@@ -592,11 +592,11 @@ class Connection:
                 total_score += best_nonexclusive_score * best_area
 
         if build_link_objects:
-            self._build_link_objects()
+            self.build_link_objects()
 
         return total_score
 
-    def _build_link_objects(self):
+    def build_link_objects(self):
         """
         Make link nodes/elements for visualisation.
         """
@@ -710,7 +710,7 @@ class Connection:
             if remove_link_indexes:
                 for remove_link_index in remove_link_indexes:
                     del links[remove_link_index]
-                self._build_link_objects()
+                self.build_link_objects()
                 self.update_annotation_category_groups()
 
     def set_link_locking_from_selection(self, lock: bool):
