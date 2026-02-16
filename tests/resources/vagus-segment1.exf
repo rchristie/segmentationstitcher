@@ -770,14 +770,14 @@ Node group:
 !#mesh mesh1d, dimension=1, nodeset=nodes
 Element group:
 11..38,43..46
-Group name: http://purl.obolibrary.org/obo/UBERON_0000124
+Group name: http://uri.interlex.org/base/ilx_0103892
 !#nodeset nodes
 Node group:
 49..84
 !#mesh mesh1d, dimension=1, nodeset=nodes
 Element group:
 47..82
-Group name: http://purl.obolibrary.org/obo/UBERON_0035020
+Group name: http://uri.interlex.org/base/ilx_0736691
 !#nodeset nodes
 Node group:
 1..11

@@ -39,7 +39,7 @@ class StitchVagusTestCase(unittest.TestCase):
         self.assertEqual("1.0.0", stitcher1.get_version())
         annotation11 = annotations1[0]
         self.assertEqual("Epineurium", annotation11.get_name())
-        self.assertEqual("http://purl.obolibrary.org/obo/UBERON_0000124", annotation11.get_term())
+        self.assertEqual("http://uri.interlex.org/base/ilx_0103892", annotation11.get_term())
         self.assertEqual(AnnotationCategory.GENERAL, annotation11.get_category())
         annotation12 = annotations1[1]
         self.assertEqual("Fascicle", annotation12.get_name())
@@ -51,7 +51,7 @@ class StitchVagusTestCase(unittest.TestCase):
         self.assertEqual(AnnotationCategory.NETWORK_GROUP_1, annotation15.get_category())
         annotation16 = annotations1[5]
         self.assertEqual("left vagus X nerve trunk", annotation16.get_name())
-        self.assertEqual('http://purl.obolibrary.org/obo/UBERON_0035020', annotation16.get_term())
+        self.assertEqual('http://uri.interlex.org/base/ilx_0736691', annotation16.get_term())
         self.assertEqual(AnnotationCategory.NETWORK_GROUP_1, annotation16.get_category())
         annotation17 = annotations1[7]
         self.assertEqual("unknown", annotation17.get_name())

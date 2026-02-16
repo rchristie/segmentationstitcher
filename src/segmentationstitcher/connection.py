@@ -700,11 +700,13 @@ class Connection:
         element_identifier = 1
         for annotation_name, links in self._annotation_links.items():
             remove_link_indexes = []
+            index = 0
             for link in links:
                 link_selected = selection_mesh_group.findElementByIdentifier(element_identifier).isValid()
                 if link_selected:
-                    remove_link_indexes.insert(0, element_identifier - 1)  # reverse order
+                    remove_link_indexes.insert(0, index)  # reverse order
                 element_identifier += 1
+                index += 1
             if remove_link_indexes:
                 for remove_link_index in remove_link_indexes:
                     del links[remove_link_index]

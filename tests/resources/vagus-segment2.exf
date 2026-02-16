@@ -689,14 +689,14 @@ Node group:
 !#mesh mesh1d, dimension=1, nodeset=nodes
 Element group:
 11..35
-Group name: http://purl.obolibrary.org/obo/UBERON_0000124
+Group name: http://uri.interlex.org/base/ilx_0103892
 !#nodeset nodes
 Node group:
 39..74
 !#mesh mesh1d, dimension=1, nodeset=nodes
 Element group:
 36..71
-Group name: http://purl.obolibrary.org/obo/UBERON_0035020
+Group name: http://uri.interlex.org/base/ilx_0736691
 !#nodeset nodes
 Node group:
 1..11

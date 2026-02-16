@@ -632,14 +632,14 @@ Node group:
 !#mesh mesh1d, dimension=1, nodeset=nodes
 Element group:
 14..38
-Group name: http://purl.obolibrary.org/obo/UBERON_0000124
+Group name: http://uri.interlex.org/base/ilx_0103892
 !#nodeset nodes
 Node group:
 43..68
 !#mesh mesh1d, dimension=1, nodeset=nodes
 Element group:
 40..65
-Group name: http://purl.obolibrary.org/obo/UBERON_0035020
+Group name: http://uri.interlex.org/base/ilx_0736691
 !#nodeset nodes
 Node group:
 1..10

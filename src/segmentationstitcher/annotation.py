@@ -138,6 +138,12 @@ class Annotation:
         assert self._term is None
         self._term = term
 
+    def clear_term(self):
+        """
+        Clear term to None, call in cases of mismatched terms for the same group name.
+        """
+        self._term = None
+
     def is_connectable_with(self, other_annotation):
         """
         Query whether ends annotated with self and other_annotation can be connected.
@@ -179,7 +185,9 @@ def region_get_annotations(region, network_group1_keywords, network_group2_keywo
         "left cervical vagus nerve": "http://uri.interlex.org/base/ilx_0794142",
         "right cervical vagus nerve": "http://uri.interlex.org/base/ilx_0794141",
         "left thoracic vagus nerve": "http://uri.interlex.org/base/ilx_0787543",
-        "right thoracic vagus nerve": "http://uri.interlex.org/base/ilx_0786664"
+        "right thoracic vagus nerve": "http://uri.interlex.org/base/ilx_0786664",
+        "left vagus x nerve trunk": "http://uri.interlex.org/base/ilx_0736691",
+        "right vagus x nerve trunk": "http://uri.interlex.org/base/ilx_0730515"
     }
     for group in groups:
         # clean up name to remove case and leading/trailing whitespace
@@ -206,7 +214,7 @@ def region_get_annotations(region, network_group1_keywords, network_group2_keywo
                 if keyword in lower_name:
                     category = AnnotationCategory.NETWORK_GROUP_2
                     break
-        term = known_terms.get(name)
+        term = known_terms.get(lower_name)
         annotation = Annotation(name, term, dimension, category)
         is_term = False
         if category in (AnnotationCategory.GENERAL, AnnotationCategory.EXCLUDE):
@@ -237,8 +245,11 @@ def region_get_annotations(region, network_group1_keywords, network_group2_keywo
         term = term_annotation.get_name()
         term_group = fieldmodule.findFieldByName(term).castGroup()
         dimension = term_annotation.get_dimension()
+        term_matched = False
         for annotation in sorted_annotations:
             if annotation.get_dimension() != dimension:
+                continue
+            if annotation.get_category() == AnnotationCategory.EXCLUDE:
                 continue
             name = annotation.get_name()
             name_group = fieldmodule.findFieldByName(name).castGroup()
@@ -253,16 +264,17 @@ def region_get_annotations(region, network_group1_keywords, network_group2_keywo
                     # logger.info("Segment " + segment_name + ": " + "Annotation name " + name +
                     #             " discovered term " + term + ".")
                     annotation.set_term(term)
-                break
+                term_matched = True
+                # do not break to allow all groups with matching contents to get the term
             else:
                 known_term = known_terms.get(name.lower())
                 if known_term == term:
                     logger.warning("Segment " + segment_name + ": " +
                         "Known annotation name " + name + " and term " + term + " groups differ. Using name group.")
-                    break
-        else:
+                    term_matched = True
+        if not term_matched:
             logger.warning("Segment " + segment_name + ": " +
-                  ".  Did not find matching annotation name for term" + term + ". Adding separate annotation.")
+                  ".  Did not find matching annotation name for term " + term + ". Adding separate annotation.")
             term_annotation.set_term(term)
             index = 0
             for annotation in annotations:

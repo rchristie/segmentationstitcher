@@ -109,9 +109,8 @@ class Segment:
                     if term != existing_term:
                         logger.warning("Segment " + name + ": Found existing annotation with name " + annotation_name +
                                        " but existing term " + str(existing_term) +
-                                       " does not equal new term " + str(term))
-                        if term and (existing_term is None):
-                            annotation.set_term(term)
+                                       " does not equal new term " + str(term) + ". Clearing term")
+                        annotation.clear_term()
                     break  # exists already
                 if annotation_name > annotation.get_name():
                     index += 1
