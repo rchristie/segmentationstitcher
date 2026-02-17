@@ -222,22 +222,28 @@ class Segment:
 
     def _element_id_to_annotation(self, element_id):
         """
-        Get first Annotation containing raw element of supplied identifier, prioritizing annotations with term ids.
+        Get first Annotation containing raw element of supplied identifier, prioritizing connectable annotations
+        then those with term ids.
         :param element_id: Identifier of element from raw region to query.
         :return: Annotation or None if not found.
         """
         element = self._raw_mesh1d.findElementByIdentifier(element_id)
-        for annotation in self._annotations:
-            has_term = (annotation.get_term() is not None) and (not "http" in annotation.get_name())
-            if has_term:
-                group = self._raw_fieldmodule.findFieldByName(annotation.get_name()).castGroup()
-                if group.isValid():
-                    mesh_group = group.getMeshGroup(self._raw_mesh1d)
-                    if mesh_group.isValid() and mesh_group.containsElement(element):
-                        return annotation
-        for annotation in self._annotations:
-            has_term = (annotation.get_term() is not None) and (not "http" in annotation.get_name())
-            if not has_term:
+        for priority in range(3):
+            for annotation in self._annotations:
+                is_connectable = annotation.is_connectable()
+                if priority == 0:
+                    if not is_connectable:
+                        continue
+                else:
+                    if is_connectable:
+                        continue
+                    has_term = (annotation.get_term() is not None) and (not "http" in annotation.get_name())
+                    if priority == 1:
+                        if not has_term:
+                            continue
+                    else:
+                        if has_term:
+                            continue
                 group = self._raw_fieldmodule.findFieldByName(annotation.get_name()).castGroup()
                 if group.isValid():
                     mesh_group = group.getMeshGroup(self._raw_mesh1d)
@@ -259,7 +265,6 @@ class Segment:
         :param min_aspect_ratio: Minimum ratio of length / mean radius to end tracking, or None to not test.
         :return: coordinates list, radius list, node id list, endElementId
         """
-        self._element_node_ids, self._node_element_ids
         node_id = start_node_id
         element_id = start_element_id
         path_coordinates = []
@@ -329,6 +334,8 @@ class Segment:
         path_mean_r = None
         stop_node_id = start_node_id
         element_ids = [start_element_id]
+        # node_ids = self._element_node_ids[start_element_id]
+        # start_node_index = 0 if (node_ids[0] == start_node_id) else -1
         stop_element_id = None
         start_x = None
         end_x = None
@@ -350,9 +357,12 @@ class Segment:
             for element_id in element_ids:
                 if element_id == stop_element_id:
                     continue
-                segment_annotation = self._element_id_to_annotation(element_id)
-                if path_annotation and (segment_annotation != path_annotation):
+                element_annotation = self._element_id_to_annotation(element_id)
+                if path_annotation and (element_annotation != path_annotation):
                     continue
+                # node_ids = self._element_node_ids[element_id]
+                # if node_ids[start_node_index] != stop_node_id:
+                #     continue  # change of element orientation: stops if same-named branches eminate from a junction
                 segment_coordinates, segment_radii, segment_node_ids, segment_stop_element_id = self._track_segment(
                     stop_node_id, element_id, path_annotation,
                     max_length=max_length - length,
@@ -424,9 +434,18 @@ class Segment:
             nodetemplate.defineField(self._working_radius_direction)
             nodetemplate.defineField(self._working_best_fit_line_orientation)
             fieldcache = self._working_fieldmodule.createFieldcache()
-            for end_node_id in self._end_node_ids:
-                end_element_id = self._node_element_ids[end_node_id][0]
-                while True:
+            interior_end_node_element_ids = {}  # map from interior end node to untracked element ids
+            for interior in (False, True):
+                for end_node_id in (sorted(interior_end_node_element_ids) if interior else self._end_node_ids):
+                    if interior:
+                        end_element_ids = interior_end_node_element_ids[end_node_id]
+                        if len(end_element_ids) != 1:
+                            continue  # not a valid interior end node
+                        self._interior_end_node_ids.append(end_node_id)
+                        end_element_id = end_element_ids[0]
+                    else:
+                        end_element_id = self._node_element_ids[end_node_id][0]
+
                     path_coordinates, path_radii, path_node_ids, annotation, start_x, end_x, mean_r =(
                         self._track_path(end_node_id, end_element_id, max_distance))
                     # Future: want to extend length to be equivalent to path_coordinates
@@ -451,23 +470,31 @@ class Segment:
                         direction3 = set_magnitude(cross(direction1, direction2), mean_r)
                     else:
                         direction2 = direction3 = [0.0, 0.0, 0.0]
-                    self._working_best_fit_line_orientation.setNodeParameters(fieldcache, -1, Node.VALUE_LABEL_VALUE, 1,
-                                                                              direction1 + direction2 + direction3)
-                    # determine if path ended on a change of annotation = interior end node
-                    end_node_id = path_node_ids[-1]
-                    end_element_id = None
-                    element_ids = self._node_element_ids[end_node_id]
-                    # simple 2 element junctions on nodes not already identified as interior
-                    if (len(element_ids) != 2) or (end_node_id in self._interior_end_node_ids):
-                        break
-                    for element_id in element_ids:
-                        tmp_annotation = self._element_id_to_annotation(element_id)
-                        if tmp_annotation != annotation:
-                            end_element_id = element_id
-                            self._interior_end_node_ids.append(end_node_id)
-                            break
-                    else:
-                        break
+                    self._working_best_fit_line_orientation.setNodeParameters(
+                        fieldcache, -1, Node.VALUE_LABEL_VALUE, 1, direction1 + direction2 + direction3)
+
+                    if not interior:
+                        stop_node_id = path_node_ids[-1]
+                        if stop_node_id not in self._end_node_ids:
+                            # determine the stop element for this path
+                            stop_element_id = None
+                            prev_node_id = path_node_ids[-2]
+                            element_ids = self._node_element_ids[stop_node_id]
+                            for element_id in element_ids:
+                                node_ids = self._element_node_ids[element_id]
+                                if prev_node_id in node_ids:
+                                    stop_element_id = element_id
+                                    break
+                            # determine if path ended on a change of annotation = interior end node
+                            for element_id in element_ids:
+                                element_annotation = self._element_id_to_annotation(element_id)
+                                if element_annotation != annotation:
+                                    end_element_ids = interior_end_node_element_ids.get(stop_node_id)
+                                    if not end_element_ids:
+                                        interior_end_node_element_ids[stop_node_id] = end_element_ids =\
+                                            copy.copy(element_ids)
+                                    end_element_ids.remove(stop_element_id)
+                                    break
 
     def get_end_point_data(self):
         """

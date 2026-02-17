@@ -144,6 +144,12 @@ class Annotation:
         """
         self._term = None
 
+    def is_connectable(self):
+        """
+        :return: True if annotation's category is connectable.
+        """
+        return self._category.is_connectable()
+
     def is_connectable_with(self, other_annotation):
         """
         Query whether ends annotated with self and other_annotation can be connected.
