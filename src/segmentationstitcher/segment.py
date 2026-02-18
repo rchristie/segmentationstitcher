@@ -68,6 +68,7 @@ class Segment:
                 group.setManaged(True)
         self._rotation = [0.0, 0.0, 0.0]
         self._translation = [0.0, 0.0, 0.0]
+        self._ignore_orientation = False
         self._transformation_change_callbacks = []
         self._raw_fieldcache = self._raw_fieldmodule.createFieldcache()
         self._raw_coordinates = self._raw_fieldmodule.findFieldByName("coordinates").castFiniteElement()
@@ -130,6 +131,7 @@ class Segment:
         settings.update(settings_in)
         self._rotation = [math.radians(deg) for deg in settings["rotation"]]
         self._translation = settings["translation"]
+        self._ignore_orientation = settings["ignore orientation"]
 
     def encode_settings(self) -> dict:
         """
@@ -137,6 +139,7 @@ class Segment:
         :return: Settings in a dict ready for passing to json.dump.
         """
         settings = {
+            "ignore orientation": self._ignore_orientation,
             "name": self._name,
             "rotation": [math.degrees(rad) for rad in self._rotation],
             "translation": self._translation
@@ -657,6 +660,16 @@ class Segment:
         self._translation = copy.copy(translation)
         if notify:
             self._transformation_change()
+
+    def is_ignore_orientation(self):
+        return self._ignore_orientation
+
+    def set_ignore_orientation(self, ignore_orientation: bool):
+        """
+        :param ignore_orientation: If True, on export put all groups starting with 'orientation' in segment into a group
+        'ignore orientation' for subsequent tools to ignore orientation.
+        """
+        self._ignore_orientation = ignore_orientation
 
     def translate(self, offset, notify=True):
         """

@@ -386,25 +386,11 @@ Node: 75
  -1.214784316068148e-00
  -2.929821893185177e-01
   3.000000000000000e-01
-!#nodeset datapoints
-Define node template: node2
-Shape. Dimension=0
-#Fields=3
-1) coordinates, coordinate, rectangular cartesian, real, #Components=3
- x. #Values=1 (value)
- y. #Values=1 (value)
- z. #Values=1 (value)
-2) marker_name, field, string, #Components=1
- 1. #Values=1 (value)
-3) radius, field, rectangular cartesian, real, #Components=1
- 1. #Values=1 (value)
-Node template: node2
 Node: 76
   2.398918879869167e+00
  -1.432597145502751e-01
   2.241355737421549e-01
- orientation
- 0.01
+  1.000000000000000e-02
 !#mesh mesh1d, dimension=1, nodeset=nodes
 Define element template: element1
 Shape. Dimension=1, line
@@ -724,7 +710,7 @@ Node group:
 !#mesh mesh1d, dimension=1, nodeset=nodes
 Element group:
 1..10
-Group name: marker
-!#nodeset datapoints
+Group name: orientation anterior
+!#nodeset nodes
 Node group:
 76

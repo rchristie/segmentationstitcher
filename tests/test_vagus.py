@@ -35,8 +35,8 @@ class StitchVagusTestCase(unittest.TestCase):
         assertAlmostEqualList(self, zero, segment12.get_translation(), delta=TOL)
         segment12.set_translation(new_translation)
         annotations1 = stitcher1.get_annotations()
-        self.assertEqual(8, len(annotations1))
-        self.assertEqual("1.0.0", stitcher1.get_version())
+        self.assertEqual(9, len(annotations1))
+        self.assertEqual("1.1.0", stitcher1.get_version())
         annotation11 = annotations1[0]
         self.assertEqual("Epineurium", annotation11.get_name())
         self.assertEqual("http://uri.interlex.org/base/ilx_0103892", annotation11.get_term())
@@ -54,8 +54,12 @@ class StitchVagusTestCase(unittest.TestCase):
         self.assertEqual('http://uri.interlex.org/base/ilx_0736691', annotation16.get_term())
         self.assertEqual(AnnotationCategory.NETWORK_GROUP_1, annotation16.get_category())
         annotation17 = annotations1[7]
-        self.assertEqual("unknown", annotation17.get_name())
-        self.assertEqual(AnnotationCategory.EXCLUDE, annotation17.get_category())
+        self.assertEqual("orientation anterior", annotation17.get_name())
+        self.assertEqual(AnnotationCategory.GENERAL, annotation17.get_category())
+        annotation18 = annotations1[8]
+        self.assertEqual("unknown", annotation18.get_name())
+        self.assertEqual(AnnotationCategory.EXCLUDE, annotation18.get_category())
+
 
         stitcher1.create_connection([segments1[0], segments1[1]])
         connections = stitcher1.get_connections()
@@ -73,10 +77,10 @@ class StitchVagusTestCase(unittest.TestCase):
         self.assertEqual(1, exclude13_mesh_group.getSize())
         self.assertEqual(26, general13_mesh_group.getSize())
         self.assertFalse(indep13_mesh_group.isValid())
-        annotation17_group = segment13.get_annotation_group(annotation17)
-        annotation17_mesh_group = annotation17_group.getMeshGroup(mesh1d)
-        self.assertEqual(1, annotation17_mesh_group.getSize())
-        annotation17.set_category(AnnotationCategory.INDEPENDENT_NETWORK)
+        annotation18_group = segment13.get_annotation_group(annotation18)
+        annotation18_mesh_group = annotation18_group.getMeshGroup(mesh1d)
+        self.assertEqual(1, annotation18_mesh_group.getSize())
+        annotation18.set_category(AnnotationCategory.INDEPENDENT_NETWORK)
         indep13_mesh_group = indep13_group.getMeshGroup(mesh1d)
         self.assertEqual(0, exclude13_mesh_group.getSize())
         self.assertEqual(26, general13_mesh_group.getSize())
@@ -84,10 +88,10 @@ class StitchVagusTestCase(unittest.TestCase):
 
         settings = stitcher1.encode_settings()
         self.assertEqual(3, len(settings["segments"]))
-        self.assertEqual(8, len(settings["annotations"]))
-        self.assertEqual("1.0.0", settings["version"])
+        self.assertEqual(9, len(settings["annotations"]))
+        self.assertEqual("1.1.0", settings["version"])
         assertAlmostEqualList(self, new_translation, settings["segments"][1]["translation"], delta=TOL)
-        self.assertEqual(AnnotationCategory.INDEPENDENT_NETWORK.name, settings["annotations"][7]["category"])
+        self.assertEqual(AnnotationCategory.INDEPENDENT_NETWORK.name, settings["annotations"][8]["category"])
 
         stitcher2 = Stitcher(segmentation_file_names, network_group1_keywords, network_group2_keywords)
         stitcher2.decode_settings(settings)
@@ -95,8 +99,8 @@ class StitchVagusTestCase(unittest.TestCase):
         segment22 = segments2[1]
         assertAlmostEqualList(self, new_translation, segment22.get_translation(), delta=TOL)
         annotations2 = stitcher2.get_annotations()
-        annotation28 = annotations2[7]
-        self.assertEqual(AnnotationCategory.INDEPENDENT_NETWORK, annotation28.get_category())
+        annotation29 = annotations2[8]
+        self.assertEqual(AnnotationCategory.INDEPENDENT_NETWORK, annotation29.get_category())
 
     def test_align_stitch_vagus1(self):
         """
@@ -186,7 +190,7 @@ class StitchVagusTestCase(unittest.TestCase):
 
         output_region = stitcher.get_root_region().createRegion()
         stitcher.stitch(output_region)
-        self.assertEqual("1.0.0", stitcher.get_version())
+        self.assertEqual("1.1.0", stitcher.get_version())
 
         fieldmodule = output_region.getFieldmodule()
         coordinates = fieldmodule.findFieldByName("coordinates").castFiniteElement()
@@ -208,7 +212,7 @@ class StitchVagusTestCase(unittest.TestCase):
         marker = fieldmodule.findFieldByName("marker").castGroup()
         self.assertTrue(marker.isValid())
         marker_datapoint_group = marker.getNodesetGroup(datapoints)
-        self.assertEqual(marker_datapoint_group.getSize(), 5)
+        self.assertEqual(marker_datapoint_group.getSize(), 2)
 
         # try auto-align with gap in 2 stages
 

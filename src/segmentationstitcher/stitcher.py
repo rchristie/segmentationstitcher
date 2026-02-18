@@ -59,7 +59,7 @@ class Stitcher:
         self._segments = []
         self._connections = []
         self._max_distance = 0.0
-        self._version = "1.0.0"  # increment when new settings added to migrate older serialised settings
+        self._version = "1.1.0"  # increment when new settings added to migrate older serialised settings
         unused_endpoints_file_names = copy.copy(self._endpoints_file_names)
         unused_endpoints_file_name_stems = [Path(file_path).stem for file_path in unused_endpoints_file_names]
         with HierarchicalChangeManager(self._root_region):
@@ -85,10 +85,12 @@ class Stitcher:
                 else:
                     zero_range_segments_count += 1
                 self._segments.append(segment)
-            # by default put all GENERAL annotations without terms into the EXCLUDE category, except "marker"
+            # by default put all GENERAL annotations without terms into the EXCLUDE category,
+            # except "marker" and those starting with "orientation"
             for annotation in self._annotations:
+                annotation_name = annotation.get_name()
                 if ((annotation.get_category() == AnnotationCategory.GENERAL) and (not annotation.get_term()) and
-                        (annotation.get_name() != "marker")):
+                        ((annotation_name != "marker") and not annotation_name.startswith("orientation"))):
                     # print("Exclude general annotation", annotation.get_name(), "with no term")
                     annotation.set_category(AnnotationCategory.EXCLUDE)
             self._mean_segment_length = 1.0
@@ -123,7 +125,7 @@ class Stitcher:
         # migrate from integer version number to string "major#.minor#.patch#"
         if isinstance(settings_version, int):
             settings_version = settings["version"] = "1.0.0"
-        assert settings_version == "1.0.0"  # future: migrate if version changes
+        # assert settings_version == "1.1.0"  # future: migrate if version changes
 
         # update annotations and warn about differences
         processed_count = 0
@@ -418,6 +420,10 @@ def _output_segment_nodes_and_markers(
     segment_group = find_or_create_field_group(fieldmodule, segment.get_name())
     segment_node_group = segment_group.getOrCreateNodesetGroup(nodes)
     segment_datapoint_group = segment_group.getOrCreateNodesetGroup(datapoints)
+    orientation_ignore_group = find_or_create_field_group(fieldmodule, "orientation ignore") \
+        if segment.is_ignore_orientation() else None
+    orientation_ignore_nodeset_group =\
+        orientation_ignore_group.getOrCreateNodesetGroup(nodes) if orientation_ignore_group else None
     for raw_group in raw_groups:
         group_name = raw_group.getName()
         groups = annotation_groups.get(group_name)
@@ -425,7 +431,10 @@ def _output_segment_nodes_and_markers(
             raw_nodeset_group = raw_group.getNodesetGroup(raw_nodes)
             if raw_nodeset_group.isValid() and (raw_nodeset_group.getSize() > 0):
                 raw_nodeset_groups.append(raw_nodeset_group)
-                nodeset_group_lists.append([group.getOrCreateNodesetGroup(nodes) for group in groups])
+                nodeset_group_list = [group.getOrCreateNodesetGroup(nodes) for group in groups]
+                if orientation_ignore_group and group_name.startswith('orientation'):
+                    nodeset_group_list.append(orientation_ignore_nodeset_group)
+                nodeset_group_lists.append(nodeset_group_list)
     raw_fieldcache = raw_fieldmodule.createFieldcache()
     raw_nodeiterator = raw_nodes.createNodeiterator()
     raw_node = raw_nodeiterator.next()
