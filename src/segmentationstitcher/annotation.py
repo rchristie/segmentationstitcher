@@ -153,7 +153,7 @@ class Annotation:
     def is_connectable_with(self, other_annotation):
         """
         Query whether ends annotated with self and other_annotation can be connected.
-        :param other_annotation: Annotation Annotation object.
+        :param other_annotation: Another Annotation object.
         :return: True if self and other_annotation are allowed to be connected by a link.
         """
         if self._category.is_connectable() and (self._category == other_annotation.get_category()):

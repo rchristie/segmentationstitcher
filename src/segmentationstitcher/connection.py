@@ -503,8 +503,7 @@ class Connection:
         def get_minimums_ratio(scores):
             """
             Get ratio of lowest / next lowest score as measure of 'only option' for first link to end point.
-            :param scores:
-            :return:
+            :param scores: List of real values or None to ignore an entry.
             """
             inf = float('inf')
             min1 = min2 = inf
