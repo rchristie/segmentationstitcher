@@ -351,6 +351,11 @@ Node: 68
  -4.359756419261278e-01
  -5.458579284260732e-01
   1.000000000000000e-02
+Node: 69
+  3.000000000000000e+00
+  0.000000000000000e+00
+  7.000000000000000e-01
+  1.000000000000000e-02
 !#nodeset datapoints
 Define node template: node2
 Shape. Dimension=0
@@ -364,18 +369,12 @@ Shape. Dimension=0
 3) radius, field, rectangular cartesian, real, #Components=1
  1. #Values=1 (value)
 Node template: node2
-Node: 69
-  3.000000000000000e+00
-  0.000000000000000e+00
-  7.000000000000000e-01
- orientation
- 0.01
-Node: 70
+Node: 1
   1.599724956533351e+00
   3.788960603141545e-03
   4.423695723249146e-03
- "landmark 2"
- 0.01
+ "left level of superior border of the clavicle on the vagus nerve"
+  1.000000000000000e-02
 !#mesh mesh1d, dimension=1, nodeset=nodes
 Define element template: element1
 Shape. Dimension=1, line
@@ -632,14 +631,14 @@ Node group:
 !#mesh mesh1d, dimension=1, nodeset=nodes
 Element group:
 14..38
-Group name: http://purl.obolibrary.org/obo/UBERON_0000124
+Group name: http://uri.interlex.org/base/ilx_0103892
 !#nodeset nodes
 Node group:
 43..68
 !#mesh mesh1d, dimension=1, nodeset=nodes
 Element group:
 40..65
-Group name: http://purl.obolibrary.org/obo/UBERON_0035020
+Group name: http://uri.interlex.org/base/ilx_0736691
 !#nodeset nodes
 Node group:
 1..10
@@ -670,7 +669,11 @@ Element group:
 Group name: marker
 !#nodeset datapoints
 Node group:
-69..70
+1
+Group name: orientation anterior
+!#nodeset nodes
+Node group:
+69
 Group name: unknown
 !#nodeset nodes
 Node group:

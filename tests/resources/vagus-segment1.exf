@@ -431,6 +431,11 @@ Node: 84
  -4.364982277527066e-01
  -3.626326906335586e-01
   1.000000000000000e-02
+Node: 85
+  2.532597965468619e+00
+  1.278581726279602e-01
+  5.305649151562682e-01
+  1.000000000000000e-02
 !#nodeset datapoints
 Define node template: node2
 Shape. Dimension=0
@@ -444,18 +449,12 @@ Shape. Dimension=0
 3) radius, field, rectangular cartesian, real, #Components=1
  1. #Values=1 (value)
 Node template: node2
-Node: 85
+Node: 1
   9.014003757666196e-01
  -3.826434512807377e-03
  -1.393280944888287e-02
- "landmark 1"
- 0.01
-Node: 86
-  2.532597965468619e+00
-  1.278581726279602e-01
-  5.305649151562682e-01
- orientation
- 0.01
+ "left level of inferior border of jugular foramen on the vagus nerve"
+  1.000000000000000e-02
 !#mesh mesh1d, dimension=1, nodeset=nodes
 Define element template: element1
 Shape. Dimension=1, line
@@ -770,14 +769,14 @@ Node group:
 !#mesh mesh1d, dimension=1, nodeset=nodes
 Element group:
 11..38,43..46
-Group name: http://purl.obolibrary.org/obo/UBERON_0000124
+Group name: http://uri.interlex.org/base/ilx_0103892
 !#nodeset nodes
 Node group:
 49..84
 !#mesh mesh1d, dimension=1, nodeset=nodes
 Element group:
 47..82
-Group name: http://purl.obolibrary.org/obo/UBERON_0035020
+Group name: http://uri.interlex.org/base/ilx_0736691
 !#nodeset nodes
 Node group:
 1..11
@@ -808,4 +807,8 @@ Element group:
 Group name: marker
 !#nodeset datapoints
 Node group:
-85..86
+1
+Group name: orientation anterior
+!#nodeset nodes
+Node group:
+85

@@ -1,19 +1,29 @@
 """
 A segment of the segmentation data, generally from a separate image block.
 """
-from builtins import enumerate
+from cmlibs.maths.vectorops import (
+    add, axis_angle_to_rotation_matrix, cross, dot, euler_to_rotation_matrix, magnitude, matrix_mult,
+    matrix_vector_mult, mult, normalize, rotation_matrix_to_euler, set_magnitude, sub)
 
-from cmlibs.maths.vectorops import cross, dot, magnitude, matrix_mult, mult, normalize, set_magnitude, sub
 from cmlibs.utils.zinc.field import (
-    get_group_list, find_or_create_field_coordinates, find_or_create_field_finite_element, find_or_create_field_group)
-from cmlibs.utils.zinc.finiteelement import evaluate_field_nodeset_range
+    get_group_list, find_or_create_field_coordinates, find_or_create_field_finite_element, find_or_create_field_group,
+    find_or_create_field_stored_string)
+from cmlibs.utils.zinc.finiteelement import evaluate_field_nodeset_range, get_maximum_node_identifier
 from cmlibs.utils.zinc.group import group_add_group_local_contents, group_remove_group_local_contents
 from cmlibs.utils.zinc.general import ChangeManager
 from cmlibs.zinc.field import Field
 from cmlibs.zinc.node import Node
 from cmlibs.zinc.result import RESULT_OK
-from segmentationstitcher.annotation import AnnotationCategory
+from segmentationstitcher.annotation import AnnotationCategory, region_get_annotations
+
+import copy
+import json
+import logging
 import math
+import os
+
+
+logger = logging.getLogger(__name__)
 
 
 class Segment:
@@ -21,11 +31,19 @@ class Segment:
     A segment of the segmentation data, generally from a separate image block.
     """
 
-    def __init__(self, name, segmentation_file_name, root_region):
+    def __init__(self, name, segmentation_file_name, root_region, annotations,
+                 network_group1_keywords, network_group2_keywords, term_keywords):
         """
         :param name: Unique name of segment, usually derived from the file name.
         :param segmentation_file_name: Path and file name of raw segmentation file, in Zinc format.
         :param root_region: Zinc root region to create segment region under.
+        :param annotations: List of all annotations to add to.
+        :param network_group1_keywords: List of keywords. Segmented networks annotated with any of these keywords are
+        initially assigned to network group 1, allowing them to be stitched together.
+        :param network_group2_keywords: List of keywords. Segmented networks annotated with any of these keywords are
+        initially assigned to network group 2, allowing them to be stitched together.
+        :param term_keywords: List of term keywords; if found in group name, group is considered to mark the term for
+        the separately named group.
         """
         self._name = name
         self._segmentation_file_name = segmentation_file_name
@@ -36,6 +54,7 @@ class Segment:
         # the raw region contains the original segment data which is not modified apart from building
         # groups to categorise data for stitching a visualisation, including selecting for display.
         self._raw_region = self._base_region.createChild("raw")
+        self._annotations = annotations
         result = self._raw_region.readFile(segmentation_file_name)
         assert result == RESULT_OK, \
             "Could not read segmentation file " + segmentation_file_name
@@ -49,6 +68,7 @@ class Segment:
                 group.setManaged(True)
         self._rotation = [0.0, 0.0, 0.0]
         self._translation = [0.0, 0.0, 0.0]
+        self._ignore_orientation = False
         self._transformation_change_callbacks = []
         self._raw_fieldcache = self._raw_fieldmodule.createFieldcache()
         self._raw_coordinates = self._raw_fieldmodule.findFieldByName("coordinates").castFiniteElement()
@@ -66,9 +86,39 @@ class Segment:
             self._working_best_fit_line_orientation = find_or_create_field_finite_element(
                 self._working_fieldmodule, "best_fit_line_orientation", 9)
             self._working_end_group = find_or_create_field_group(self._working_fieldmodule, "active_ends")
+            for category in AnnotationCategory:
+                if category.is_connectable():
+                    group_name = category.get_group_name()
+                    group = self._working_fieldmodule.createFieldGroup()
+                    group.setName(group_name)
+                    group.setManaged(True)
         self._element_node_ids, self._node_element_ids = self._get_element_node_maps()
-        self._end_node_ids = self._get_end_node_ids()
+        # following are determing by client call to create_end_point_directions()
+        self._end_node_ids = []  # mesh end points = nodes in only 1 element
+        self._interior_end_node_ids = []  # certain interior points where annotation changes, also connectable
         self._end_point_data = {}  # dict node_id -> (coordinates, direction, radius, annotation)
+
+        segment_annotations = region_get_annotations(
+            self._raw_region, network_group1_keywords, network_group2_keywords, term_keywords)
+        for segment_annotation in segment_annotations:
+            annotation_name = segment_annotation.get_name()
+            term = segment_annotation.get_term()
+            index = 0
+            for annotation in self._annotations:
+                if annotation.get_name() == annotation_name:
+                    existing_term = annotation.get_term()
+                    if term != existing_term:
+                        logger.warning("Segment " + name + ": Found existing annotation with name " + annotation_name +
+                                       " but existing term " + str(existing_term) +
+                                       " does not equal new term " + str(term) + ". Clearing term")
+                        annotation.clear_term()
+                    break  # exists already
+                if annotation_name > annotation.get_name():
+                    index += 1
+            else:
+                # print("Add annotation name", annotation_name, "term", term, "dim", segment_annotation.get_dimension(),
+                #       "category", segment_annotation.get_category())
+                self._annotations.insert(index, segment_annotation)
 
     def decode_settings(self, settings_in: dict):
         """
@@ -79,8 +129,9 @@ class Segment:
         # update current settings to gain new ones and override old ones
         settings = self.encode_settings()
         settings.update(settings_in)
-        self._rotation = settings["rotation"]
+        self._rotation = [math.radians(deg) for deg in settings["rotation"]]
         self._translation = settings["translation"]
+        self._ignore_orientation = settings["ignore orientation"]
 
     def encode_settings(self) -> dict:
         """
@@ -88,11 +139,63 @@ class Segment:
         :return: Settings in a dict ready for passing to json.dump.
         """
         settings = {
+            "ignore orientation": self._ignore_orientation,
             "name": self._name,
-            "rotation": self._rotation,
+            "rotation": [math.degrees(rad) for rad in self._rotation],
             "translation": self._translation
         }
         return settings
+
+    def define_endpoints(self, endpoints_file_name):
+        """
+        Read endpoints labels and positions from the endpoints file as markers in the raw region.
+        These are used to associate externally recognised names with endpoints for later reporting.
+        :param endpoints_file_name: Name of file in Slicer 3D markups json format.
+        """
+        if os.path.isfile(endpoints_file_name):
+            with open(endpoints_file_name, "r") as f:
+                try:
+                    marker_file_data = json.loads(f.read())
+                    schema = marker_file_data.get("@schema")
+                    markups = marker_file_data.get("markups")
+                    if not (schema and ("slicer" in schema) and ("markups" in schema) and markups):
+                        logger.error("Stitcher endpoints file " + endpoints_file_name + " is not a supported file type")
+                        return
+                    if len(markups) == 0:
+                        logger.warning("Stitcher endpoints file" + endpoints_file_name + " has no markups")
+                    for markup in markups:
+                        coordinate_system = markup.get("coordinateSystem")
+                        if coordinate_system != "LPS":
+                            logger.warning("Stitcher endpoints file" + endpoints_file_name
+                                           + " unimplemented coordinateSystem name " + coordinate_system)
+                        coordinate_units = markup.get("coordinateUnits")
+                        control_points = markup.get("controlPoints")
+                        if not (isinstance(control_points, list) and (len(control_points) > 0)):
+                            logger.warning("Stitcher endpoints file" + endpoints_file_name + " has no controlPoints")
+                            continue
+                        # build list of marker labels and positions
+                        marker_labels = []
+                        marker_positions = []
+                        for control_point in control_points:
+                            marker_labels.append(control_point["label"])
+                            x = control_point["position"]
+                            # if "C1L" in self._name:
+                            #     x = [-1000.0 * x[1] - 4500.0, 1000.0 * x[0] + 2250.0, -1000.0 * x[2] + 11500.0]
+                            # elif any(s in self._name for s in ["T5L", "T6L"]):
+                            #     x = [-1000.0 * x[1] - 9500.0, 1000.0 * x[0] + 5000.0, -1000.0 * x[2]]
+                            # elif any(s in self._name for s in ["C2L", "C4L", "T2L", "T3L", "T4L"]):
+                            #     x = [-9.0 * x[1], 9.0 * x[0], -9.0 * x[2]]
+                            # else:
+                            #     x = [9.0 * x[1], -9.0 * x[0], -9.0 * x[2]]
+                            marker_positions.append(x)
+                        generate_datapoints(self._raw_region, marker_positions,
+                                            field_names_and_values=[("marker_name", marker_labels)],
+                                            group_name="marker")
+                except json.JSONDecodeError as e:
+                    logger.error("Stitcher endpoints file " + endpoints_file_name
+                                 + " exception reading json format " + str(e))
+        else:
+            logger.error("Stitcher endpoints file " + endpoints_file_name + " not found")
 
     def _get_element_node_maps(self):
         """
@@ -120,52 +223,57 @@ class Segment:
             element = elem_iter.next()
         return element_node_ids, node_element_ids
 
-    def _get_end_node_ids(self):
+    def _element_id_to_annotation(self, element_id):
         """
-        :return: List of identifiers of nodes at end points i.e. in only 1 element.
-        """
-        end_node_ids = []
-        for node_id, element_ids in self._node_element_ids.items():
-            if len(element_ids) == 1:
-                end_node_ids.append(node_id)
-        return end_node_ids
-
-    def _element_id_to_group(self, element_id, annotations):
-        """
-        Get the first Annotation zinc Group containing raw element of supplied identifier.
-        :param node_id: Identifier of [end] node to query.
-        :param annotations: Global list of all annotations.
-        :return: Zinc Group, MeshGroup or None, None if not found.
+        Get first Annotation containing raw element of supplied identifier, prioritizing connectable annotations
+        then those with term ids.
+        :param element_id: Identifier of element from raw region to query.
+        :return: Annotation or None if not found.
         """
         element = self._raw_mesh1d.findElementByIdentifier(element_id)
-        for annotation in annotations:
-            group = self._raw_fieldmodule.findFieldByName(annotation.get_name()).castGroup()
-            if group.isValid():
-                mesh_group = group.getMeshGroup(self._raw_mesh1d)
-                if mesh_group.isValid() and mesh_group.containsElement(element):
-                    return group, mesh_group
-        return None, None
+        for priority in range(3):
+            for annotation in self._annotations:
+                is_connectable = annotation.is_connectable()
+                if priority == 0:
+                    if not is_connectable:
+                        continue
+                else:
+                    if is_connectable:
+                        continue
+                    has_term = (annotation.get_term() is not None) and (not "http" in annotation.get_name())
+                    if priority == 1:
+                        if not has_term:
+                            continue
+                    else:
+                        if has_term:
+                            continue
+                group = self._raw_fieldmodule.findFieldByName(annotation.get_name()).castGroup()
+                if group.isValid():
+                    mesh_group = group.getMeshGroup(self._raw_mesh1d)
+                    if mesh_group.isValid() and mesh_group.containsElement(element):
+                        return annotation
+        return None
 
-    def _track_segment(self, start_node_id, start_element_id,
+    def _track_segment(self, start_node_id, start_element_id, annotation,
                        max_length=None, min_element_count=None, min_aspect_ratio=None):
         """
         Get coordinates and radii along segment from start_node_id in start_element_id, proceeding
-        first to other local node in element, until junction, end point or max_distance is tracked.
+        first to other local node in element, until junction, end point, annotation change or max_distance is tracked.
         Can finish earlier if min_element_count, min_aspect_ratio reached, but both must be reached if both in use.
         :param start_node_id: First node in path.
         :param start_element_id: Element containing start_node_id and another node to be added.
+        :param annotation: Annotation which element needs to be in.
         :param max_length: Maximum length to track from first node coordinates, or None for no limit.
         :param min_element_count: Minimum number of elements to track, or None to not test.
         :param min_aspect_ratio: Minimum ratio of length / mean radius to end tracking, or None to not test.
         :return: coordinates list, radius list, node id list, endElementId
         """
-        self._element_node_ids, self._node_element_ids
         node_id = start_node_id
         element_id = start_element_id
         path_coordinates = []
         path_radii = []
         path_node_ids = []
-        lastNode = False
+        is_last_node = False
         sum_r = 0.0
         while True:
             if node_id in path_node_ids:
@@ -183,7 +291,7 @@ class Segment:
                 r = 1.0
             path_radii.append(r)
             sum_r += r
-            if lastNode:
+            if is_last_node:
                 break
             point_count = len(path_coordinates)
             if point_count > 1:
@@ -203,29 +311,34 @@ class Segment:
             node_id = node_ids[1] if (node_ids[0] == node_id) else node_ids[0]
             element_ids = self._node_element_ids[node_id]
             if len(element_ids) != 2:
-                lastNode = True
+                is_last_node = True
                 continue
             element_id = element_ids[1] if (element_ids[0] == element_id) else element_ids[0]
+            # Future: more efficient to check element is in annotation mesh group?
+            next_annotation = self._element_id_to_annotation(element_id)
+            if next_annotation != annotation:
+                is_last_node = True
 
         return path_coordinates, path_radii, path_node_ids, element_id
 
-    def _track_path(self, end_node_id, annotations, max_length=None):
+    def _track_path(self, start_node_id, start_element_id, max_length=None):
         """
-        Get coordinates and radii along path from end_node_id, continuing along
-        branches if in similar direction.
-        :param end_node_id: End node identifier to track from. Must be in only one element.
-        :param annotations: Global list of all annotations.
+        Get coordinates and radii along path from start_node_id, across start_element_id, continuing along branches if
+        in a similar direction. Stops at another end point (1 parent element) or annotation change.
+        :param start_node_id: Start node identifier to track from.
+        :param start_element_id: Start element identifier to track across.
         :param max_length: Maximum length to track along, or None for no limit.
-        :return: coordinates list, radius list, path node ids, path group, start_x, end_x, mean_r
+        :return: coordinates list, radius list, path node ids, path annotation, start_x, end_x, mean_r
         """
-        element_ids = self._node_element_ids[end_node_id]
-        assert len(element_ids) == 1
-        path_group = self._element_id_to_group(element_ids[0], annotations)[0]
+        path_annotation = self._element_id_to_annotation(start_element_id)
         path_coordinates = []
         path_radii = []
         path_node_ids = []
         path_mean_r = None
-        stop_node_id = end_node_id
+        stop_node_id = start_node_id
+        element_ids = [start_element_id]
+        # node_ids = self._element_node_ids[start_element_id]
+        # start_node_index = 0 if (node_ids[0] == start_node_id) else -1
         stop_element_id = None
         start_x = None
         end_x = None
@@ -247,11 +360,14 @@ class Segment:
             for element_id in element_ids:
                 if element_id == stop_element_id:
                     continue
-                segment_group = self._element_id_to_group(element_id, annotations)[0]
-                if path_group and (segment_group != path_group):
+                element_annotation = self._element_id_to_annotation(element_id)
+                if path_annotation and (element_annotation != path_annotation):
                     continue
+                # node_ids = self._element_node_ids[element_id]
+                # if node_ids[start_node_index] != stop_node_id:
+                #     continue  # change of element orientation: stops if same-named branches eminate from a junction
                 segment_coordinates, segment_radii, segment_node_ids, segment_stop_element_id = self._track_segment(
-                    stop_node_id, element_id,
+                    stop_node_id, element_id, path_annotation,
                     max_length=max_length - length,
                     min_element_count=min_element_count - element_count,
                     min_aspect_ratio=min_aspect_ratio - aspect_ratio)
@@ -299,49 +415,89 @@ class Segment:
             if add_path_mean_r > 0.0:
                 aspect_ratio += add_path_length / add_path_mean_r
         # 2nd iteration of fit line removes outliers:
-        start_x, end_x, mean_r = fit_line(path_coordinates, path_radii, start_x, end_x, 0.5)[0:3]
-        return path_coordinates, path_radii, path_node_ids, path_group, start_x, end_x, mean_r
+        start_x, end_x, mean_r = fit_line(path_coordinates, path_radii, start_x, end_x, 0.25)[0:3]
+        return path_coordinates, path_radii, path_node_ids, path_annotation, start_x, end_x, mean_r
 
-    def create_end_point_directions(self, annotations, max_distance):
+    def create_end_point_directions(self, max_distance):
         """
         Track mean directions of network end points and create working objects for visualisation.
-        :param annotations: Global list of all annotations.
         :param max_distance: Maximum length to track back from end point. Stored for link tolerance.
         """
-        nodetemplate = self._working_datapoints.createNodetemplate()
-        nodetemplate.defineField(self._working_coordinates)
-        nodetemplate.defineField(self._working_radius_direction)
-        nodetemplate.defineField(self._working_best_fit_line_orientation)
-        fieldcache = self._working_fieldmodule.createFieldcache()
-        self._end_point_data = {}
-        for end_node_id in self._end_node_ids:
-            path_coordinates, path_radii, path_node_ids, path_group, start_x, end_x, mean_r =(
-                self._track_path(end_node_id, annotations, max_distance))
-            # Future: want to extend length to be equivalent to path_coordinates
-            direction = sub(start_x, end_x)
-            annotation = None
-            annotation_group_name = path_group.getName() if path_group else None
-            if annotation_group_name:
-                for tmp_annotation in annotations:
-                    if tmp_annotation.get_name() == annotation_group_name:
-                        annotation = tmp_annotation
-                        break
-            self._end_point_data[end_node_id] = (start_x, normalize(direction), mean_r, annotation)
-            # set up visualization objects. End direction datapoints have same identifiers as raw end nodes
-            node = self._working_datapoints.createNode(end_node_id, nodetemplate)
-            fieldcache.setNode(node)
-            radius_direction = set_magnitude(direction, mean_r)
-            self._working_coordinates.setNodeParameters(fieldcache, -1, Node.VALUE_LABEL_VALUE, 1, start_x)
-            self._working_radius_direction.setNodeParameters(fieldcache, -1, Node.VALUE_LABEL_VALUE, 1,
-                                                             radius_direction)
-            direction1 = sub(end_x, start_x)
-            axis = [1.0, 0.0, 0.0]
-            if dot(normalize(direction1), axis) < 0.1:
-                axis = [0.0, 1.0, 0.0]
-            direction2 = set_magnitude(cross(axis, direction1), mean_r)
-            direction3 = set_magnitude(cross(direction1, direction2), mean_r)
-            self._working_best_fit_line_orientation.setNodeParameters(fieldcache, -1, Node.VALUE_LABEL_VALUE, 1,
-                                                                      direction1 + direction2 + direction3)
+        # following are determined here:
+        self._end_node_ids = []  # mesh end points = nodes in only 1 element
+        self._interior_end_node_ids = []  # certain interior points where annotation changes, also connectable
+        self._end_point_data = {}  # dict node_id -> (coordinates, direction, radius, annotation)
+        for node_id, element_ids in self._node_element_ids.items():
+            element_count = len(element_ids)
+            if element_count == 1:
+                self._end_node_ids.append(node_id)
+        with ChangeManager(self._working_fieldmodule):
+            nodetemplate = self._working_datapoints.createNodetemplate()
+            nodetemplate.defineField(self._working_coordinates)
+            nodetemplate.defineField(self._working_radius_direction)
+            nodetemplate.defineField(self._working_best_fit_line_orientation)
+            fieldcache = self._working_fieldmodule.createFieldcache()
+            interior_end_node_element_ids = {}  # map from interior end node to untracked element ids
+            for interior in (False, True):
+                for end_node_id in (sorted(interior_end_node_element_ids) if interior else self._end_node_ids):
+                    if interior:
+                        end_element_ids = interior_end_node_element_ids[end_node_id]
+                        if len(end_element_ids) != 1:
+                            continue  # not a valid interior end node
+                        self._interior_end_node_ids.append(end_node_id)
+                        end_element_id = end_element_ids[0]
+                    else:
+                        end_element_id = self._node_element_ids[end_node_id][0]
+
+                    path_coordinates, path_radii, path_node_ids, annotation, start_x, end_x, mean_r =(
+                        self._track_path(end_node_id, end_element_id, max_distance))
+                    # Future: want to extend length to be equivalent to path_coordinates
+                    direction = sub(start_x, end_x)
+                    if not annotation:
+                        print("No annotation group for node", end_node_id)
+                    self._end_point_data[end_node_id] = (start_x, normalize(direction), mean_r, annotation)
+                    # set up visualization objects. End direction datapoints have same identifiers as raw end nodes
+                    node = self._working_datapoints.createNode(end_node_id, nodetemplate)
+                    fieldcache.setNode(node)
+                    radius_direction = set_magnitude(direction, mean_r)
+                    self._working_coordinates.setNodeParameters(fieldcache, -1, Node.VALUE_LABEL_VALUE, 1, start_x)
+                    self._working_radius_direction.setNodeParameters(fieldcache, -1, Node.VALUE_LABEL_VALUE, 1,
+                                                                     radius_direction)
+                    direction1 = sub(end_x, start_x)
+                    if (magnitude(direction1) > 0.0) and (mean_r > 0.0):
+                        norm_direction1 = normalize(direction1)
+                        for side in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]:
+                            if math.fabs(dot(norm_direction1, side)) < 0.1:
+                                break
+                        direction2 = set_magnitude(cross(side, direction1), mean_r)
+                        direction3 = set_magnitude(cross(direction1, direction2), mean_r)
+                    else:
+                        direction2 = direction3 = [0.0, 0.0, 0.0]
+                    self._working_best_fit_line_orientation.setNodeParameters(
+                        fieldcache, -1, Node.VALUE_LABEL_VALUE, 1, direction1 + direction2 + direction3)
+
+                    if not interior:
+                        stop_node_id = path_node_ids[-1]
+                        if stop_node_id not in self._end_node_ids:
+                            # determine the stop element for this path
+                            stop_element_id = None
+                            prev_node_id = path_node_ids[-2]
+                            element_ids = self._node_element_ids[stop_node_id]
+                            for element_id in element_ids:
+                                node_ids = self._element_node_ids[element_id]
+                                if prev_node_id in node_ids:
+                                    stop_element_id = element_id
+                                    break
+                            # determine if path ended on a change of annotation = interior end node
+                            for element_id in element_ids:
+                                element_annotation = self._element_id_to_annotation(element_id)
+                                if element_annotation != annotation:
+                                    end_element_ids = interior_end_node_element_ids.get(stop_node_id)
+                                    if not end_element_ids:
+                                        interior_end_node_element_ids[stop_node_id] = end_element_ids =\
+                                            copy.copy(element_ids)
+                                    end_element_ids.remove(stop_element_id)
+                                    break
 
     def get_end_point_data(self):
         """
@@ -389,12 +545,33 @@ class Segment:
     def get_name(self):
         return self._name
 
+    def get_coordinates_midpoint(self):
+        """
+        :return: Coordinates at the midpoint in their x, y, z range.
+        """
+        return [0.5 * (minimum + maximum) for minimum, maximum in zip(self._raw_minimums, self._raw_maximums)]
+
+    def get_coordinates_range(self):
+        """
+        Get x, y, z ranges of coordinates in raw data.
+        :return: Minimum coordinates, maximum coordinates.
+        """
+        return self._raw_minimums, self._raw_maximums
+
     def get_max_range(self):
         """
         :return: Maximum range of raw coordinates on any axis x, y, z.
         """
         raw_range = [self._raw_maximums[c] - self._raw_minimums[c] for c in range(3)]
         return max(raw_range)
+
+    def transform_coordinates(self, position):
+        """
+        :param position Coordinates x, y, z in the segment.
+        :return: Transformed position.
+        """
+        rotation_matrix = euler_to_rotation_matrix(self._rotation)
+        return add(matrix_vector_mult(rotation_matrix, position), self._translation)
 
     def get_raw_region(self):
         """
@@ -425,17 +602,48 @@ class Segment:
         for transformation_change_callback in self._transformation_change_callbacks:
             transformation_change_callback(self)
 
-    def get_rotation(self):
+    def get_rotation_radians(self):
         return self._rotation
 
-    def set_rotation(self, rotation, notify=True):
+    def set_rotation_radians(self, rotation, notify=True):
+        """
+        Set segment rotation, which applies before translation.
+        :param rotation: Rotation as list of 3 Euler angles in radians.
+        :param notify: Set to False to avoid notification to clients if setting translation afterwards.
+        """
+        assert len(rotation) == 3
+        self._rotation = copy.copy(rotation)
+        if notify:
+            self._transformation_change()
+
+    def get_rotation_degrees(self):
+        return [math.degrees(rad) for rad in self._rotation]
+
+    def set_rotation_degrees(self, rotation, notify=True):
         """
         Set segment rotation, which applies before translation.
         :param rotation: Rotation as list of 3 Euler angles in degrees.
         :param notify: Set to False to avoid notification to clients if setting translation afterwards.
         """
-        assert len(rotation) == 3
-        self._rotation = rotation
+        self.set_rotation_radians([math.radians(deg) for deg in rotation], notify)
+
+    def rotate_about_point_axis(self, centre, axis, angle_radians, notify=True):
+        """
+        Update rotation and translation parameters to include a subsequent rotation about a centre.
+        :param centre: Centre of subsequent rotation (after initial rotation and translation applied).
+        :param axis: Axis of subsequent rotation (after initial rotation and translation applied).
+        :param angle_radians: Rotation in radians in a right hand sense about axis.
+        :param notify: Set to False to avoid notification to clients if setting rotation afterwards.
+        """
+        mat1 = euler_to_rotation_matrix(self._rotation)
+        centre_translation1 = matrix_vector_mult(mat1, centre)
+        mat2 = axis_angle_to_rotation_matrix(axis, angle_radians)
+        product_mat = matrix_mult(mat2, mat1)
+        centre_translation2 = matrix_vector_mult(product_mat, centre)
+        self._rotation = rotation_matrix_to_euler(product_mat)
+        # correct translation of centre by new rotation:
+        centre_offset = sub(centre_translation1, centre_translation2)
+        self._translation = add(self._translation, centre_offset)
         if notify:
             self._transformation_change()
 
@@ -449,7 +657,28 @@ class Segment:
         :param notify: Set to False to avoid notification to clients if setting rotation afterwards.
         """
         assert len(translation) == 3
-        self._translation = translation
+        self._translation = copy.copy(translation)
+        if notify:
+            self._transformation_change()
+
+    def is_ignore_orientation(self):
+        return self._ignore_orientation
+
+    def set_ignore_orientation(self, ignore_orientation: bool):
+        """
+        :param ignore_orientation: If True, on export put all groups starting with 'orientation' in segment into a group
+        'ignore orientation' for subsequent tools to ignore orientation.
+        """
+        self._ignore_orientation = ignore_orientation
+
+    def translate(self, offset, notify=True):
+        """
+        :param offset: 3 value to add to translation
+        :param notify: Set to False to avoid notification to clients if setting rotation afterwards.
+        """
+        assert len(offset) == 3
+        for c in range(3):
+            self._translation[c] += offset[c]
         if notify:
             self._transformation_change()
 
@@ -460,12 +689,27 @@ class Segment:
         """
         return self._working_region
 
+    def get_working_fieldmodule(self):
+        """
+        :return: Zinc Fieldmodule for working region.
+        """
+        return self._working_fieldmodule
+
     def get_working_end_group(self):
         """
         Get group from working region containing connectable end points in segment.
         :return: Zinc group containing connectable end points.
         """
         return self._working_end_group
+
+    def get_working_category_group(self, category):
+        """
+        Get group from working region containing connectable end points in segment and in the supplied category.
+        :param category: AnnotationCategory.
+        :return: Zinc group containing connectable end points in that category.
+        """
+        category_group = self._working_fieldmodule.findFieldByName(category.get_group_name()).castGroup()
+        return category_group if category_group.isValid() else None
 
     def update_annotation_category(self, annotation, old_category=AnnotationCategory.EXCLUDE):
         """
@@ -489,17 +733,16 @@ class Segment:
             group_add_group_local_contents(new_category_group, annotation_group)
         self._update_working_end_group()
 
-    def update_annotation_category_groups(self, annotations):
+    def update_annotation_category_groups(self):
         """
         Rebuild all annotation category groups e.g. after loading settings.
-        :param annotations: List of all annotations from stitcher.
         """
         with ChangeManager(self._raw_fieldmodule):
             # clear all category groups
             for category in AnnotationCategory:
                 category_group = self.get_category_group(category)
                 category_group.clear()
-            for annotation in annotations:
+            for annotation in self._annotations:
                 annotation_group = self.get_annotation_group(annotation)
                 if annotation_group:
                     category_group = self.get_category_group(annotation.get_category())
@@ -510,28 +753,62 @@ class Segment:
         """
         Ensure working end group contains all connectable end points.
         """
-        connectable_node_groups = []
-        for category in AnnotationCategory:
-            if category.is_connectable():
-                category_group = self.get_category_group(category)
-                node_group = category_group.getNodesetGroup(self._raw_nodes)
-                if node_group.isValid() and (node_group.getSize() > 0):
-                    connectable_node_groups.append(node_group)
+        # list of (raw_category_node_group, working_category_node_group) capable of connections
         with ChangeManager(self._working_fieldmodule):
-            self._working_end_group.clear()
             working_datapoints = \
                 self._working_fieldmodule.findNodesetByFieldDomainType(Field.DOMAIN_TYPE_DATAPOINTS)
+            connectable_node_groups = []
+            for category in AnnotationCategory:
+                if category.is_connectable():
+                    category_group = self.get_category_group(category)
+                    category_node_group = category_group.getNodesetGroup(self._raw_nodes)
+                    working_category_group = self.get_working_category_group(category)
+                    if category_node_group.isValid() and working_category_group:
+                        working_category_group.clear()
+                        working_category_node_group = working_category_group.getOrCreateNodesetGroup(working_datapoints)
+                        connectable_node_groups.append((category_node_group, working_category_node_group))
+            self._working_end_group.clear()
             working_node_group = self._working_end_group.getOrCreateNodesetGroup(working_datapoints)
             working_nodeiterator = working_datapoints.createNodeiterator()
             working_node = working_nodeiterator.next()
             while working_node.isValid():
                 node_identifier = working_node.getIdentifier()
                 raw_node = self._raw_nodes.findNodeByIdentifier(node_identifier)
-                for node_group in connectable_node_groups:
+                for node_group, working_category_node_group in connectable_node_groups:
                     if node_group.containsNode(raw_node):
                         working_node_group.addNode(working_node)
-                        break;
+                        working_category_node_group.addNode(working_node)
+                        break
                 working_node = working_nodeiterator.next()
+
+    def get_selected_end_points(self):
+        """
+        Get end points in selected elements in segment. This includes node points with a single parent element, and
+        certain interior node points where the annotation changed.
+        :return: List of node identifiers, list of annotations for each node.
+        """
+        root_scene = self._base_region.getRoot().getScene()
+        root_selection_group = root_scene.getSelectionField().castGroup()
+        if not root_selection_group.isValid():
+            return [], []
+        fieldmodule = self._raw_region.getFieldmodule()
+        mesh1d = fieldmodule.findMeshByDimension(1)
+        selection_mesh_group = root_selection_group.getMeshGroup(mesh1d)
+        if not selection_mesh_group.isValid():
+            return [], []
+        node_ids = []
+        node_annotations = []
+        elementiterator = selection_mesh_group.createElementiterator()
+        element = elementiterator.next()
+        while element.isValid():
+            element_id = element.getIdentifier()
+            for node_id in self._element_node_ids[element_id]:
+                if (node_id in self._end_node_ids) or (node_id in self._interior_end_node_ids):
+                    if node_id not in node_ids:
+                        node_ids.append(node_id)
+                        node_annotations.append(self._end_point_data[node_id][3])
+            element = elementiterator.next()
+        return node_ids, node_annotations
 
 def fit_line(path_coordinates, path_radii, x1=None, x2=None, filter_proportion=0.0):
     """
@@ -619,3 +896,55 @@ def fit_line(path_coordinates, path_radii, x1=None, x2=None, filter_proportion=0
     #       [a_inv[1][0] * a[0][0] + a_inv[1][1] * a[1][0],
     #        a_inv[1][0] * a[0][1] + a_inv[1][1] * a[1][1]])
     return start_x, end_x, mean_r, mean_projection_error
+
+
+def generate_datapoints(region, px, start_data_identifier=None, coordinate_field_name="coordinates",
+                        field_names_and_values=[], group_name=None):
+    """
+    Generate a set of datapoints in the region.
+    :param region: Zinc Region.
+    :param px: Coordinates of data points.
+    :param start_data_identifier: Optional first datapoint identifier to use.
+    :param coordinate_field_name: Optional name of coordinate field to define, if omitted use "coordinates".
+    :param field_names_and_values: Optional lists of (field_name, list of values) for additional fields to
+    define on the datapoints. Values may be scalar or vector (list of lists) real, or string.
+    Must be same number of values as number of points.
+    :param group_name: Optional name of group to put new datapoints in.
+    :return: next datapoint identifier
+    """
+    fieldmodule = region.getFieldmodule()
+    with ChangeManager(fieldmodule):
+        coordinates = find_or_create_field_coordinates(fieldmodule, name=coordinate_field_name)
+        group = find_or_create_field_group(fieldmodule, group_name) if group_name else None
+
+        datapoints = fieldmodule.findNodesetByFieldDomainType(Field.DOMAIN_TYPE_DATAPOINTS)
+        data_identifier = start_data_identifier if (start_data_identifier is not None) else \
+            max(get_maximum_node_identifier(datapoints), 0) + 1
+        data_group = group.getOrCreateNodesetGroup(datapoints) if group else datapoints
+
+        nodetemplate = datapoints.createNodetemplate()
+        nodetemplate.defineField(coordinates)
+        fields_values = []  # (field, is_string, values)
+        for field_name, field_values in field_names_and_values:
+            is_string = isinstance(field_values[0], str)
+            if is_string:
+                field = find_or_create_field_stored_string(fieldmodule, field_name, managed=True)
+            else:
+                components_count = len(field_values[0]) if isinstance(field_values[0], list) else 1
+                field = find_or_create_field_finite_element(fieldmodule, field_name, components_count, managed=True)
+            nodetemplate.defineField(field)
+            fields_values.append((field, is_string, field_values))
+
+        fieldcache = fieldmodule.createFieldcache()
+        for n, x in enumerate(px):
+            node = data_group.createNode(data_identifier, nodetemplate)
+            fieldcache.setNode(node)
+            coordinates.setNodeParameters(fieldcache, -1, Node.VALUE_LABEL_VALUE, 1, x)
+            for field, is_string, values in fields_values:
+                if is_string:
+                    field.assignString(fieldcache, values[n])
+                else:
+                    field.setNodeParameters(fieldcache, -1, Node.VALUE_LABEL_VALUE, 1, values[n])
+            data_identifier += 1
+
+    return data_identifier

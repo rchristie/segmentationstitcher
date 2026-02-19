@@ -35,23 +35,31 @@ class StitchVagusTestCase(unittest.TestCase):
         assertAlmostEqualList(self, zero, segment12.get_translation(), delta=TOL)
         segment12.set_translation(new_translation)
         annotations1 = stitcher1.get_annotations()
-        self.assertEqual(7, len(annotations1))
-        self.assertEqual(1, stitcher1.get_version())
+        self.assertEqual(9, len(annotations1))
+        self.assertEqual("1.1.0", stitcher1.get_version())
         annotation11 = annotations1[0]
         self.assertEqual("Epineurium", annotation11.get_name())
-        self.assertEqual("http://purl.obolibrary.org/obo/UBERON_0000124", annotation11.get_term())
+        self.assertEqual("http://uri.interlex.org/base/ilx_0103892", annotation11.get_term())
         self.assertEqual(AnnotationCategory.GENERAL, annotation11.get_category())
         annotation12 = annotations1[1]
         self.assertEqual("Fascicle", annotation12.get_name())
         self.assertEqual("http://uri.interlex.org/base/ilx_0738426", annotation12.get_term())
         self.assertEqual(AnnotationCategory.NETWORK_GROUP_2, annotation12.get_category())
         annotation15 = annotations1[4]
-        self.assertEqual("left vagus X nerve trunk", annotation15.get_name())
-        self.assertEqual('http://purl.obolibrary.org/obo/UBERON_0035020', annotation15.get_term())
+        self.assertEqual("left A branch END", annotation15.get_name())
+        self.assertIsNone(annotation15.get_term())
         self.assertEqual(AnnotationCategory.NETWORK_GROUP_1, annotation15.get_category())
-        annotation17 = annotations1[6]
-        self.assertEqual("unknown", annotation17.get_name())
-        self.assertEqual(AnnotationCategory.EXCLUDE, annotation17.get_category())
+        annotation16 = annotations1[5]
+        self.assertEqual("left vagus X nerve trunk", annotation16.get_name())
+        self.assertEqual('http://uri.interlex.org/base/ilx_0736691', annotation16.get_term())
+        self.assertEqual(AnnotationCategory.NETWORK_GROUP_1, annotation16.get_category())
+        annotation17 = annotations1[7]
+        self.assertEqual("orientation anterior", annotation17.get_name())
+        self.assertEqual(AnnotationCategory.GENERAL, annotation17.get_category())
+        annotation18 = annotations1[8]
+        self.assertEqual("unknown", annotation18.get_name())
+        self.assertEqual(AnnotationCategory.EXCLUDE, annotation18.get_category())
+
 
         stitcher1.create_connection([segments1[0], segments1[1]])
         connections = stitcher1.get_connections()
@@ -69,10 +77,10 @@ class StitchVagusTestCase(unittest.TestCase):
         self.assertEqual(1, exclude13_mesh_group.getSize())
         self.assertEqual(26, general13_mesh_group.getSize())
         self.assertFalse(indep13_mesh_group.isValid())
-        annotation17_group = segment13.get_annotation_group(annotation17)
-        annotation17_mesh_group = annotation17_group.getMeshGroup(mesh1d)
-        self.assertEqual(1, annotation17_mesh_group.getSize())
-        annotation17.set_category(AnnotationCategory.INDEPENDENT_NETWORK)
+        annotation18_group = segment13.get_annotation_group(annotation18)
+        annotation18_mesh_group = annotation18_group.getMeshGroup(mesh1d)
+        self.assertEqual(1, annotation18_mesh_group.getSize())
+        annotation18.set_category(AnnotationCategory.INDEPENDENT_NETWORK)
         indep13_mesh_group = indep13_group.getMeshGroup(mesh1d)
         self.assertEqual(0, exclude13_mesh_group.getSize())
         self.assertEqual(26, general13_mesh_group.getSize())
@@ -80,10 +88,10 @@ class StitchVagusTestCase(unittest.TestCase):
 
         settings = stitcher1.encode_settings()
         self.assertEqual(3, len(settings["segments"]))
-        self.assertEqual(7, len(settings["annotations"]))
-        self.assertEqual(1, settings["version"])
+        self.assertEqual(9, len(settings["annotations"]))
+        self.assertEqual("1.1.0", settings["version"])
         assertAlmostEqualList(self, new_translation, settings["segments"][1]["translation"], delta=TOL)
-        self.assertEqual(AnnotationCategory.INDEPENDENT_NETWORK.name, settings["annotations"][6]["category"])
+        self.assertEqual(AnnotationCategory.INDEPENDENT_NETWORK.name, settings["annotations"][8]["category"])
 
         stitcher2 = Stitcher(segmentation_file_names, network_group1_keywords, network_group2_keywords)
         stitcher2.decode_settings(settings)
@@ -91,8 +99,8 @@ class StitchVagusTestCase(unittest.TestCase):
         segment22 = segments2[1]
         assertAlmostEqualList(self, new_translation, segment22.get_translation(), delta=TOL)
         annotations2 = stitcher2.get_annotations()
-        annotation27 = annotations2[6]
-        self.assertEqual(AnnotationCategory.INDEPENDENT_NETWORK, annotation27.get_category())
+        annotation29 = annotations2[8]
+        self.assertEqual(AnnotationCategory.INDEPENDENT_NETWORK, annotation29.get_category())
 
     def test_align_stitch_vagus1(self):
         """
@@ -110,7 +118,7 @@ class StitchVagusTestCase(unittest.TestCase):
         stitcher = Stitcher(segmentation_file_names, network_group1_keywords, network_group2_keywords)
         segments = stitcher.get_segments()
 
-        segments[1].set_rotation([0.0, -10.0, -60.0])
+        segments[1].set_rotation_degrees([0.0, -10.0, -60.0])
         segments[1].set_translation([5.0, 0.0, 0.0])
         segments[2].set_translation([10.0, 0.0, 0.5])
 
@@ -130,24 +138,59 @@ class StitchVagusTestCase(unittest.TestCase):
         connection01 = stitcher.create_connection([segments[0], segments[1]])
         connection12 = stitcher.create_connection([segments[1], segments[2]])
 
-        connection01.optimise_transformation()
-        assertAlmostEqualList(self, [-2.894576, -5.574263, -63.93093], segments[1].get_rotation(), delta=TOL)
-        assertAlmostEqualList(self, [4.88866, -0.01213587, 0.01357185], segments[1].get_translation(), delta=TOL)
-        linked_nodes01 = connection01.get_linked_nodes()
-        self.assertEqual(linked_nodes01, {
-            "Fascicle": [[22, 28], [35, 12], [40, 23]],
-            "left vagus X nerve trunk": [[11, 1]]})
+        expected_annotation_links01 = {
+            "Fascicle": [
+                {'lock': False,
+                 'node identifiers': [22, 28]},
+                {'lock': False,
+                 'node identifiers': [35, 12]},
+                {'lock': False,
+                 'node identifiers': [40, 23]}],
+            "left vagus X nerve trunk": [
+                {'lock': False,
+                 'node identifiers': [11, 1]}]}
 
-        connection12.optimise_transformation()
-        assertAlmostEqualList(self, [-4.919549, -2.280625, -13.52467], segments[2].get_rotation(), delta=TOL)
-        assertAlmostEqualList(self, [9.543171, -0.3494296, 0.03930248], segments[2].get_translation(), delta=TOL)
-        linked_nodes12 = connection12.get_linked_nodes()
-        self.assertEqual(linked_nodes12, {
-            "Fascicle": [[22, 15], [38, 25]],
-            "left vagus X nerve trunk": [[11, 1]]})
+        connection01.auto_align_segment(1)
+        rotation = segments[1].get_rotation_degrees()
+        translation = segments[1].get_translation()
+        assertAlmostEqualList(self, [-4.459501969125895, -8.161074730792063, -58.089501540814254], rotation, delta=TOL)
+        assertAlmostEqualList(self, [4.901057529124233, 0.004805043555627213, -0.04779580320829241],
+                              translation, delta=TOL)
+        annotation_links01 = connection01.get_annotation_links()
+        self.assertEqual(expected_annotation_links01, annotation_links01)
+
+        expected_annotation_links12 = {
+            "Fascicle": [
+                {'lock': False,
+                 'node identifiers': [22, 15]},
+                {'lock': False,
+                 'node identifiers': [38, 25]}],
+            "left vagus X nerve trunk": [
+                {'lock': False,
+                 'node identifiers': [11, 1]}]}
+
+        connection12.auto_align_segment(1)
+        rotation = segments[2].get_rotation_degrees()
+        translation = segments[2].get_translation()
+        assertAlmostEqualList(self, [-3.216043371586617, -5.467042596782779, -0.4267779669299892], rotation, delta=TOL)
+        assertAlmostEqualList(self, [9.537442541080164, -0.3524223146102781, 0.28070488408317984], translation, delta=TOL)
+        annotation_links12 = connection12.get_annotation_links()
+        self.assertEqual(expected_annotation_links12, annotation_links12)
+
+        # now align first segment relative to second
+        connection01.auto_align_segment(0)
+        rotation = segments[0].get_rotation_degrees()
+        translation = segments[0].get_translation()
+        assertAlmostEqualList(self, [0.0022017172050087866, -0.05083254291897361, 1.5180006139100206],
+                              rotation, delta=TOL)
+        assertAlmostEqualList(self, [-1.7169803818076998e-06, -0.00037724526155702106, -0.0029090218733886335],
+                              translation, delta=TOL)
+        annotation_links01 = connection01.get_annotation_links()
+        self.assertEqual(expected_annotation_links01, annotation_links01)
 
         output_region = stitcher.get_root_region().createRegion()
         stitcher.stitch(output_region)
+        self.assertEqual("1.1.0", stitcher.get_version())
 
         fieldmodule = output_region.getFieldmodule()
         coordinates = fieldmodule.findFieldByName("coordinates").castFiniteElement()
@@ -155,8 +198,8 @@ class StitchVagusTestCase(unittest.TestCase):
         datapoints = fieldmodule.findNodesetByFieldDomainType(Field.DOMAIN_TYPE_DATAPOINTS)
         mesh = fieldmodule.findMeshByDimension(1)
         minimums, maximums = evaluate_field_nodeset_range(coordinates, nodes)
-        assertAlmostEqualList(self, [0.04674543239403558, -1.5276719288528786, -0.5804178855490847], minimums, delta=TOL)
-        assertAlmostEqualList(self, [13.538987060134247, 1.11238124203403, 0.6470665850902932], maximums, delta=TOL)
+        assertAlmostEqualList(self, [0.04678894233410661, -1.3448619475857166, -0.5849221355942552], minimums, delta=TOL)
+        assertAlmostEqualList(self, [13.528908286654149, 1.12292211593189, 1.4370793304399627], maximums, delta=TOL)
 
         fascicle = fieldmodule.findFieldByName("Fascicle").castGroup()
         self.assertTrue(fascicle.isValid())
@@ -169,7 +212,33 @@ class StitchVagusTestCase(unittest.TestCase):
         marker = fieldmodule.findFieldByName("marker").castGroup()
         self.assertTrue(marker.isValid())
         marker_datapoint_group = marker.getNodesetGroup(datapoints)
-        self.assertEqual(marker_datapoint_group.getSize(), 5)
+        self.assertEqual(marker_datapoint_group.getSize(), 2)
+
+        # try auto-align with gap in 2 stages
+
+        segments[0].set_rotation_degrees([0.0, 0.0, 0.0])
+        segments[0].set_translation([0.0, 0.0, 0.0])
+        segments[1].set_rotation_degrees([0.0, -10.0, -60.0])
+        segments[1].set_translation([5.0, 0.0, 0.0])
+        segments[2].set_rotation_degrees([0.0, 0.0, 40.0])
+        segments[2].set_translation([10.0, 0.0, 0.5])
+
+        connection12.auto_align_segment(1, phase1_align=True, gap_distance=0.1, phase_2_optimize=False)
+        rotation = segments[2].get_rotation_degrees()
+        translation = segments[2].get_translation()
+        assertAlmostEqualList(self, [2.7968079813220417, -7.433708312768542, 39.583915044651825], rotation, delta=TOL)
+        assertAlmostEqualList(self, [9.734631815723224, -0.028181186581394506, 0.505539399215602], translation, delta=TOL)
+        annotation_links12 = connection12.get_annotation_links()
+        self.assertEqual(expected_annotation_links12, annotation_links12)
+
+        connection12.auto_align_segment(1, phase1_align=False, gap_distance=0.1, phase_2_optimize=True)
+        rotation = segments[2].get_rotation_degrees()
+        translation = segments[2].get_translation()
+        assertAlmostEqualList(self, [1.1774294709982658, -7.223345962981031, -3.1504154683525827], rotation, delta=TOL)
+        assertAlmostEqualList(self, [9.735859443921962, -0.003902802918894957, 0.4936970140282092], translation, delta=TOL)
+        annotation_links12 = connection12.get_annotation_links()
+        self.assertEqual(expected_annotation_links12, annotation_links12)
+
 
 if __name__ == "__main__":
     unittest.main()
